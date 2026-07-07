@@ -29,3 +29,7 @@ class JudgeError(EvalflowError):
 
 class CacheError(EvalflowError):
     """The response cache was misused (e.g. accessed before connect())."""
+
+
+class ResultsError(EvalflowError):
+    """A SampleResult had a state outside the closed set summarize() knows how to count."""
