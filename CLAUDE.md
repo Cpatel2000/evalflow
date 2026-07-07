@@ -48,7 +48,7 @@ Design docs live in `docs/design/`. Read the relevant one before implementing a 
 
 ## Definition of done for any task
 
-1. Tests written and passing, lint clean.
+1. `ruff check . && ruff format --check . && pytest -q` all passing, matching CI exactly.
 2. Public functions have docstrings (one line + args if non-obvious).
 3. NOTES.md updated if a decision was made.
 4. No TODOs left in code without an issue-style note in NOTES.md.
