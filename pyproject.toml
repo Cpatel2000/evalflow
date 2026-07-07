@@ -12,6 +12,7 @@ dependencies = [
     "aiosqlite>=0.19",
     "structlog>=24.1",
     "anthropic>=0.40",
+    "typer>=0.12",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +38,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["evalflow"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer's API is built around calling Argument()/Option() as argument defaults.
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

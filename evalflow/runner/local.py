@@ -1,0 +1,210 @@
+"""LocalRunner: asyncio + a semaphore for concurrency, no distributed execution.
+
+Per sample: render the prompt, check the cache, on a miss call the provider
+and cache the raw response, then score. A provider failure or a judge error on
+one sample becomes a SampleResult in the appropriate error state -- it never
+aborts the run or takes down sibling tasks (except a real cancellation, which
+must still propagate; see the CancelledError note in providers/base.py).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+import jinja2
+import structlog
+
+from evalflow.cache import ResponseCache
+from evalflow.errors import EvalflowError, ProviderError
+from evalflow.providers.anthropic import AnthropicProvider
+from evalflow.providers.base import Provider, ProviderResponse
+from evalflow.results import RunSummary, SampleResult, summarize
+from evalflow.runner.base import Runner
+from evalflow.scorers.base import ScoreResult
+from evalflow.scorers.deterministic import score_exact, score_regex
+from evalflow.scorers.judge import JudgeFile, load_judge_file, score_judge
+from evalflow.spec import EvalSpec, ExactScorer, JudgeScorer, ModelSpec, RegexScorer, RunSpec
+
+_JINJA_ENV = jinja2.Environment(undefined=jinja2.StrictUndefined)
+_log = structlog.get_logger(__name__)
+
+ProviderFactory = Callable[[ModelSpec, RunSpec], Provider]
+
+
+def _default_provider_factory(model: ModelSpec, run: RunSpec) -> Provider:
+    if model.provider == "anthropic":
+        return AnthropicProvider(
+            model=model.name, max_retries=run.max_retries, timeout_s=run.timeout_s
+        )
+    raise EvalflowError(
+        f"provider {model.provider!r} is not implemented yet (only 'anthropic' in this version)"
+    )
+
+
+def _resolve_path(base_dir: Path, path: str) -> Path:
+    p = Path(path)
+    return p if p.is_absolute() else base_dir / p
+
+
+def _error_result(sample_id: str, detail: str) -> SampleResult:
+    return SampleResult(
+        sample_id=sample_id,
+        state="provider_error",
+        score=None,
+        response_text=None,
+        input_tokens=None,
+        output_tokens=None,
+        latency_ms=None,
+        cached=False,
+        detail=detail,
+    )
+
+
+class LocalRunner(Runner):
+    """Runs an eval spec locally: one ResponseCache and one Provider per model,
+    constructed once per run, not once per sample.
+
+    served_models tracks the set of API-reported model strings seen across all
+    responses (cached or fresh) during the most recent run() call -- used by
+    the CLI to populate the manifest's served_models field.
+    """
+
+    def __init__(
+        self,
+        *,
+        cache_path: str | Path,
+        provider_factory: ProviderFactory = _default_provider_factory,
+    ) -> None:
+        self._cache_path = cache_path
+        self._provider_factory = provider_factory
+        self.served_models: set[str] = set()
+
+    async def run(self, spec: EvalSpec) -> tuple[list[SampleResult], RunSummary]:
+        start = time.monotonic()
+        self.served_models = set()
+        samples = spec.load_samples()
+
+        judge_file: JudgeFile | None = None
+        judge_provider: Provider | None = None
+        if isinstance(spec.scorer, JudgeScorer):
+            judge_path = _resolve_path(spec.base_dir, spec.scorer.judge_prompt)
+            judge_file = load_judge_file(judge_path)
+            judge_provider = self._provider_factory(spec.scorer.model, spec.run)
+
+        provider = self._provider_factory(spec.model, spec.run)
+        semaphore = asyncio.Semaphore(spec.run.concurrency)
+
+        async with ResponseCache(self._cache_path) as cache:
+            results = await asyncio.gather(
+                *(
+                    self._run_one(
+                        spec, sample, provider, judge_provider, judge_file, cache, semaphore
+                    )
+                    for sample in samples
+                )
+            )
+
+        wall_time_s = time.monotonic() - start
+        summary = summarize(list(results), spec.model, wall_time_s)
+        return list(results), summary
+
+    async def _run_one(
+        self,
+        spec: EvalSpec,
+        sample: dict,
+        provider: Provider,
+        judge_provider: Provider | None,
+        judge_file: JudgeFile | None,
+        cache: ResponseCache,
+        semaphore: asyncio.Semaphore,
+    ) -> SampleResult:
+        sample_id = str(sample[spec.dataset.id_field])
+        async with semaphore:
+            start = time.monotonic()
+            try:
+                result = await self._score_one(
+                    spec, sample, sample_id, provider, judge_provider, judge_file, cache
+                )
+            except ProviderError as exc:
+                result = _error_result(sample_id, str(exc))
+            except Exception as exc:  # noqa: BLE001 -- task isolation: one bad
+                # sample must never crash the run or its siblings. CancelledError
+                # is BaseException, not Exception, so real cancellation still
+                # propagates through this unharmed (see providers/base.py NOTES).
+                result = _error_result(sample_id, f"unexpected error: {exc!r}")
+            elapsed_ms = (time.monotonic() - start) * 1000
+
+        _log.info(
+            "sample_completed",
+            sample_id=sample_id,
+            state=result.state,
+            cached=result.cached,
+            latency_ms=round(elapsed_ms, 2),
+        )
+        return result
+
+    async def _score_one(
+        self,
+        spec: EvalSpec,
+        sample: dict,
+        sample_id: str,
+        provider: Provider,
+        judge_provider: Provider | None,
+        judge_file: JudgeFile | None,
+        cache: ResponseCache,
+    ) -> SampleResult:
+        prompt = _JINJA_ENV.from_string(spec.prompt).render(**sample)
+        params_dict = spec.model.params.model_dump()
+
+        cache_entry = await cache.get(
+            spec.model.provider, spec.model.name, spec.model.base_url, prompt, params_dict
+        )
+        cached = cache_entry is not None
+        if cached:
+            response = ProviderResponse(**cache_entry.response)
+        else:
+            response = await provider.complete(prompt, spec.model.params)
+            await cache.put(
+                spec.model.provider,
+                spec.model.name,
+                spec.model.base_url,
+                prompt,
+                params_dict,
+                dataclasses.asdict(response),
+            )
+        self.served_models.add(response.model)
+
+        score_result = await self._score(spec, sample, response.text, judge_provider, judge_file)
+
+        return SampleResult(
+            sample_id=sample_id,
+            state=score_result.state,
+            score=score_result.score if score_result.state == "scored" else None,
+            response_text=response.text,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_ms=response.latency_ms,
+            cached=cached,
+            detail=score_result.detail,
+        )
+
+    async def _score(
+        self,
+        spec: EvalSpec,
+        sample: dict,
+        response_text: str,
+        judge_provider: Provider | None,
+        judge_file: JudgeFile | None,
+    ) -> ScoreResult:
+        scorer = spec.scorer
+        if isinstance(scorer, ExactScorer):
+            return score_exact(sample, response_text, scorer)
+        if isinstance(scorer, RegexScorer):
+            return score_regex(sample, response_text, scorer)
+        assert judge_provider is not None
+        assert judge_file is not None
+        return await score_judge(sample, response_text, scorer, judge_file, judge_provider)
