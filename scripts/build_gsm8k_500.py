@@ -1,8 +1,8 @@
 """Build examples/data/gsm8k_500.jsonl from the GSM8K test split.
 
 Requires the `datasets` library (pip install datasets) -- script-only, NOT an
-reproeval dependency, deliberately not added to pyproject.toml. This script is
-run once to regenerate the file; reproeval itself never imports `datasets`.
+gradetrail dependency, deliberately not added to pyproject.toml. This script is
+run once to regenerate the file; gradetrail itself never imports `datasets`.
 
 Each row gets an `answer_pattern` field alongside `answer`: the same number
 with optional commas at thousands boundaries (e.g. "114200" -> "114,?200",

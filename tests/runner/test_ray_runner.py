@@ -1,4 +1,4 @@
-"""Tests for reproeval.runner.ray_runner.RayRunner: the Ray backend.
+"""Tests for gradetrail.runner.ray_runner.RayRunner: the Ray backend.
 
 Requires a real (non-local-mode) Ray cluster -- ray.init(local_mode=False,
 num_cpus=2) in a session-scoped fixture, torn down at the end. Marked `ray`
@@ -25,10 +25,10 @@ pytestmark = pytest.mark.ray
 
 ray = pytest.importorskip("ray")
 
-from reproeval.providers.base import ProviderResponse  # noqa: E402
-from reproeval.runner.local import LocalRunner  # noqa: E402
-from reproeval.runner.ray_runner import RayRunner  # noqa: E402
-from reproeval.spec import DatasetSpec, EvalSpec, ExactScorer, ModelSpec, RunSpec  # noqa: E402
+from gradetrail.providers.base import ProviderResponse  # noqa: E402
+from gradetrail.runner.local import LocalRunner  # noqa: E402
+from gradetrail.runner.ray_runner import RayRunner  # noqa: E402
+from gradetrail.spec import DatasetSpec, EvalSpec, ExactScorer, ModelSpec, RunSpec  # noqa: E402
 
 
 @pytest.fixture(scope="session")

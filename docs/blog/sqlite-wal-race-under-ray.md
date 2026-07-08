@@ -4,7 +4,7 @@
 
 ## The symptom
 
-reproeval's Ray backend test suite boots a real, non-local-mode Ray cluster (`ray.init(local_mode=False, num_cpus=2)`) and runs the runner tests against it. One of those tests checks that multiple Ray workers writing to the same SQLite-backed response cache produce results a later run can read back correctly.
+gradetrail's Ray backend test suite boots a real, non-local-mode Ray cluster (`ray.init(local_mode=False, num_cpus=2)`) and runs the runner tests against it. One of those tests checks that multiple Ray workers writing to the same SQLite-backed response cache produce results a later run can read back correctly.
 
 It failed intermittently: not every run, roughly one in four to seven. The failure was always the same shape. A sample that should have scored came back as `provider_error`, with a detail message reading:
 
@@ -68,7 +68,7 @@ In practice, when several connections open a brand-new file at nearly the same m
 
 ## The fix, in two layers
 
-The correctness fix belongs in `ResponseCache.connect()` itself, not in whichever caller happens to connect first. If the fix lived only in the Ray runner, the next concurrent entry point (two `reproeval run` invocations started at once, a future distributed backend) would silently reintroduce the same race.
+The correctness fix belongs in `ResponseCache.connect()` itself, not in whichever caller happens to connect first. If the fix lived only in the Ray runner, the next concurrent entry point (two `gradetrail run` invocations started at once, a future distributed backend) would silently reintroduce the same race.
 
 ```python
 async def connect(self) -> None:

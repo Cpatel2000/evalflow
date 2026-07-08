@@ -1,4 +1,4 @@
-"""Tests for reproeval.runner.ray_runner's pure helpers: _shard_samples and the
+"""Tests for gradetrail.runner.ray_runner's pure helpers: _shard_samples and the
 lazy-ray-import guard.
 
 No Ray cluster needed here -- these run fast, always, unmarked (not `ray`),
@@ -12,8 +12,8 @@ import builtins
 
 import pytest
 
-from reproeval.errors import ReproevalError
-from reproeval.runner.ray_runner import _require_ray, _shard_samples
+from gradetrail.errors import GradetrailError
+from gradetrail.runner.ray_runner import _require_ray, _shard_samples
 
 # --- _shard_samples ----------------------------------------------------------------
 
@@ -54,7 +54,7 @@ def test_shard_samples_handles_single_worker() -> None:
 # --- _require_ray --------------------------------------------------------------------
 
 
-def test_require_ray_raises_reproeval_error_when_ray_missing(
+def test_require_ray_raises_gradetrail_error_when_ray_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     real_import = builtins.__import__
@@ -66,7 +66,7 @@ def test_require_ray_raises_reproeval_error_when_ray_missing(
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with pytest.raises(ReproevalError, match=r"reproeval\[ray\]"):
+    with pytest.raises(GradetrailError, match=r"gradetrail\[ray\]"):
         _require_ray()
 
 

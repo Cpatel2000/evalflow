@@ -15,8 +15,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from reproeval.errors import ResultsError
-from reproeval.spec import ModelSpec
+from gradetrail.errors import ResultsError
+from gradetrail.spec import ModelSpec
 
 _MILLION = Decimal(1_000_000)
 

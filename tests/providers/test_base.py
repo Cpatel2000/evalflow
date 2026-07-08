@@ -1,4 +1,4 @@
-"""Tests for reproeval.providers.base: the retry/backoff loop shared by all providers.
+"""Tests for gradetrail.providers.base: the retry/backoff loop shared by all providers.
 
 Concrete providers only implement _complete() (one raw attempt) and classify()
 (retryable vs fatal). This file drives that contract with fakes so the retry
@@ -14,10 +14,10 @@ from typing import Literal
 import pytest
 import structlog
 
-import reproeval.providers.base as base_module
-from reproeval.errors import ProviderError
-from reproeval.providers.base import Provider, ProviderResponse
-from reproeval.spec import ModelParams
+import gradetrail.providers.base as base_module
+from gradetrail.errors import ProviderError
+from gradetrail.providers.base import Provider, ProviderResponse
+from gradetrail.spec import ModelParams
 
 MODEL = "claude-sonnet-4-6"
 PARAMS = ModelParams(max_tokens=1024, temperature=0.0)

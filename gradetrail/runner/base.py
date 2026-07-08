@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from reproeval.results import RunSummary, SampleResult
-from reproeval.spec import EvalSpec
+from gradetrail.results import RunSummary, SampleResult
+from gradetrail.spec import EvalSpec
 
 
 class Runner(ABC):

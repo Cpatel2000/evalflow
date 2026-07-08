@@ -1,4 +1,4 @@
-"""Tests for reproeval.cache: SQLite response cache and its key derivation.
+"""Tests for gradetrail.cache: SQLite response cache and its key derivation.
 
 Encodes design doc rule 2 (docs/design/eval-spec.md): the cache key is per-sample
 sha256 of canonical JSON of (provider, model, base_url, resolved prompt, params).
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-import reproeval.cache as cache_module
-from reproeval.cache import ResponseCache, cache_key
-from reproeval.errors import CacheError
+import gradetrail.cache as cache_module
+from gradetrail.cache import ResponseCache, cache_key
+from gradetrail.errors import CacheError
 
 BASE_KWARGS = dict(
     provider="anthropic",

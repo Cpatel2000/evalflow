@@ -1,10 +1,10 @@
-# reproeval
+# gradetrail
 
 A distributed LLM evaluation harness that treats evals like tests: declarative, cached, reproducible.
 
 ## What this project is
 
-A Python library + CLI. A user defines an eval in a YAML spec (dataset, prompt template, model, scorer), runs it with `reproeval run spec.yaml`, and gets scored results plus a reproducibility manifest. Runs are cached, multi-provider, and can execute locally (asyncio) or distributed (Ray) behind the same interface.
+A Python library + CLI. A user defines an eval in a YAML spec (dataset, prompt template, model, scorer), runs it with `gradetrail run spec.yaml`, and gets scored results plus a reproducibility manifest. Runs are cached, multi-provider, and can execute locally (asyncio) or distributed (Ray) behind the same interface.
 
 Target user: an ML researcher who wants eval results in 30 seconds of setup, not a platform to administer.
 
@@ -12,14 +12,14 @@ Target user: an ML researcher who wants eval results in 30 seconds of setup, not
 
 Modules and their single responsibility. Do not blur these boundaries.
 
-- `reproeval/spec.py` - Eval spec dataclasses + YAML loading/validation. The spec is the public contract. NEVER change the spec schema without asking me first.
-- `reproeval/providers/` - Provider abstraction. One base class, one module per provider (`anthropic.py`, `openai.py`, `openai_compatible.py`). ALL model API calls go through this layer. No direct HTTP/SDK calls anywhere else in the codebase.
-- `reproeval/scorers/` - Scoring. `deterministic.py` (exact match, regex, numeric tolerance) and `judge.py` (LLM-as-judge). Judge prompts are versioned artifacts referenced by the spec, never inlined ad hoc.
-- `reproeval/cache.py` - SQLite response cache. Key = sha256 of canonical JSON of (provider, model, resolved prompt, sampling params). Cache logic lives here and only here.
-- `reproeval/runner/` - Execution. `base.py` defines the Runner interface, `local.py` (asyncio + semaphore concurrency), `ray_runner.py` (Ray backend, added in week 3). Runners are swappable via config, callers never know which one they got.
-- `reproeval/manifest.py` - Run manifests: spec hash, model versions, timestamps, seed, git SHA, package version. Every run writes one.
-- `reproeval/results.py` - Results model + JSONL writing + summary stats (scores, cost, tokens, failure rate).
-- `reproeval/cli.py` - Thin CLI (typer). No business logic here, it only wires modules together.
+- `gradetrail/spec.py` - Eval spec dataclasses + YAML loading/validation. The spec is the public contract. NEVER change the spec schema without asking me first.
+- `gradetrail/providers/` - Provider abstraction. One base class, one module per provider (`anthropic.py`, `openai.py`, `openai_compatible.py`). ALL model API calls go through this layer. No direct HTTP/SDK calls anywhere else in the codebase.
+- `gradetrail/scorers/` - Scoring. `deterministic.py` (exact match, regex, numeric tolerance) and `judge.py` (LLM-as-judge). Judge prompts are versioned artifacts referenced by the spec, never inlined ad hoc.
+- `gradetrail/cache.py` - SQLite response cache. Key = sha256 of canonical JSON of (provider, model, resolved prompt, sampling params). Cache logic lives here and only here.
+- `gradetrail/runner/` - Execution. `base.py` defines the Runner interface, `local.py` (asyncio + semaphore concurrency), `ray_runner.py` (Ray backend, added in week 3). Runners are swappable via config, callers never know which one they got.
+- `gradetrail/manifest.py` - Run manifests: spec hash, model versions, timestamps, seed, git SHA, package version. Every run writes one.
+- `gradetrail/results.py` - Results model + JSONL writing + summary stats (scores, cost, tokens, failure rate).
+- `gradetrail/cli.py` - Thin CLI (typer). No business logic here, it only wires modules together.
 
 Design docs live in `docs/design/`. Read the relevant one before implementing a module.
 
@@ -27,7 +27,7 @@ Design docs live in `docs/design/`. Read the relevant one before implementing a 
 
 - Python 3.11+. Type hints on every function signature. `from __future__ import annotations` at the top of each module.
 - Prefer functions and frozen dataclasses over classes with mutable state. Only use a class when there is real state or a real interface (providers, runners).
-- Errors: raise specific exceptions from `reproeval/errors.py`. Never bare `except:`. Never swallow exceptions silently.
+- Errors: raise specific exceptions from `gradetrail/errors.py`. Never bare `except:`. Never swallow exceptions silently.
 - Logging: `structlog`, structured key-value logs. Every provider call logs model, latency_ms, tokens, cached (bool), outcome. No print() outside the CLI.
 - Async: provider calls are async. Do not mix sync SDK calls into async paths, use the async clients.
 - Dependencies: keep them minimal. Ask before adding any new dependency. Current allowed set: pydantic, typer, structlog, anthropic, openai, pyyaml, aiosqlite, ray (week 3 only).

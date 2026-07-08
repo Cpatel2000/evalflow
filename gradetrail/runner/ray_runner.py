@@ -9,8 +9,8 @@ task raised) converts every sample in that batch to a provider_error result
 with the failure in detail -- the run itself never crashes, the same
 guarantee LocalRunner gives at the per-sample level.
 
-ray is imported lazily, only inside run() -- the base reproeval install never
-requires it; `pip install reproeval[ray]` is required to actually use this
+ray is imported lazily, only inside run() -- the base gradetrail install never
+requires it; `pip install gradetrail[ray]` is required to actually use this
 backend.
 """
 
@@ -20,27 +20,27 @@ import asyncio
 import time
 from pathlib import Path
 
-from reproeval.cache import ResponseCache
-from reproeval.errors import ReproevalError
-from reproeval.results import RunSummary, SampleResult, summarize
-from reproeval.runner.base import Runner
-from reproeval.runner.local import (
+from gradetrail.cache import ResponseCache
+from gradetrail.errors import GradetrailError
+from gradetrail.results import RunSummary, SampleResult, summarize
+from gradetrail.runner.base import Runner
+from gradetrail.runner.local import (
     ProviderFactory,
     _default_provider_factory,
     _error_result,
     _resolve_path,
     run_one_sample,
 )
-from reproeval.scorers.judge import JudgeFile, load_judge_file
-from reproeval.spec import EvalSpec, JudgeScorer
+from gradetrail.scorers.judge import JudgeFile, load_judge_file
+from gradetrail.spec import EvalSpec, JudgeScorer
 
 
 def _require_ray():  # noqa: ANN202 -- return type is the `ray` module, kept untyped to avoid importing it at module level
     try:
         import ray
     except ImportError as exc:
-        raise ReproevalError(
-            "the ray backend requires the optional ray dependency: install reproeval[ray]"
+        raise GradetrailError(
+            "the ray backend requires the optional ray dependency: install gradetrail[ray]"
         ) from exc
     return ray
 

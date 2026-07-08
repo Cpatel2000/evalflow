@@ -14,16 +14,16 @@ from pathlib import Path
 
 import typer
 
-from reproeval.errors import DatasetError, SpecError
-from reproeval.manifest import write_manifest
-from reproeval.results import RunSummary, write_jsonl
-from reproeval.runner.local import LocalRunner
-from reproeval.runner.ray_runner import RayRunner
-from reproeval.spec import compute_identity, load_spec
+from gradetrail.errors import DatasetError, SpecError
+from gradetrail.manifest import write_manifest
+from gradetrail.results import RunSummary, write_jsonl
+from gradetrail.runner.local import LocalRunner
+from gradetrail.runner.ray_runner import RayRunner
+from gradetrail.spec import compute_identity, load_spec
 
 app = typer.Typer()
 
-_DEFAULT_CACHE_PATH = Path(".reproeval_cache.sqlite")
+_DEFAULT_CACHE_PATH = Path(".gradetrail_cache.sqlite")
 _MAX_DEFAULT_WORKERS = 8
 
 
@@ -37,7 +37,7 @@ class Backend(enum.StrEnum):
 
 @app.callback()
 def _main() -> None:
-    """reproeval: a distributed LLM evaluation harness."""
+    """gradetrail: a distributed LLM evaluation harness."""
 
 
 @app.command()

@@ -13,9 +13,9 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
-import reproeval
-from reproeval.results import RunSummary
-from reproeval.spec import EvalSpec, JudgeScorer, compute_identity
+import gradetrail
+from gradetrail.results import RunSummary
+from gradetrail.spec import EvalSpec, JudgeScorer, compute_identity
 
 
 def _dataset_sha256(spec: EvalSpec) -> str:
@@ -67,7 +67,7 @@ def write_manifest(
         "judge_sha256": _judge_sha256(spec),
         "requested_model": spec.model.name,
         "served_models": sorted(served_models),
-        "reproeval_version": reproeval.__version__,
+        "gradetrail_version": gradetrail.__version__,
         "git_sha": _git_sha(),
         "created_at": datetime.now(UTC).isoformat(),
         "wall_time_s": summary.wall_time_s,

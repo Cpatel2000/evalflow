@@ -1,6 +1,6 @@
 """Provider abstraction: the retry/backoff loop shared by every model provider.
 
-Concrete providers (reproeval/providers/anthropic.py, etc.) only implement one
+Concrete providers (gradetrail/providers/anthropic.py, etc.) only implement one
 raw attempt (_complete) and how to classify a raw SDK exception (classify).
 Everything about retrying, timing out, backing off, and logging lives here,
 once, so no provider module reimplements it.
@@ -17,8 +17,8 @@ from typing import Literal
 
 import structlog
 
-from reproeval.errors import ProviderError
-from reproeval.spec import ModelParams
+from gradetrail.errors import ProviderError
+from gradetrail.spec import ModelParams
 
 _BASE_DELAY_S = 0.5
 _MAX_DELAY_S = 20.0

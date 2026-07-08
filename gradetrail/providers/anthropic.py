@@ -7,8 +7,8 @@ from typing import Literal
 
 import anthropic
 
-from reproeval.providers.base import Provider, ProviderResponse
-from reproeval.spec import ModelParams
+from gradetrail.providers.base import Provider, ProviderResponse
+from gradetrail.spec import ModelParams
 
 
 class AnthropicProvider(Provider):

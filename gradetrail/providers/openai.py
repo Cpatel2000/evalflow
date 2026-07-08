@@ -8,8 +8,8 @@ from typing import Literal
 import openai
 import structlog
 
-from reproeval.providers.base import Provider, ProviderResponse
-from reproeval.spec import ModelParams
+from gradetrail.providers.base import Provider, ProviderResponse
+from gradetrail.spec import ModelParams
 
 _log = structlog.get_logger(__name__)
 

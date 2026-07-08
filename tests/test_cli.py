@@ -1,4 +1,4 @@
-"""Tests for reproeval.cli: argument wiring, output paths, exit codes.
+"""Tests for gradetrail.cli: argument wiring, output paths, exit codes.
 
 LocalRunner and RayRunner are stubbed out here -- runner internals
 (concurrency, caching, scoring, provider failures, real Ray execution) are
@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import reproeval.cli as cli_module
-from reproeval.results import RunSummary, SampleResult
+import gradetrail.cli as cli_module
+from gradetrail.results import RunSummary, SampleResult
 
 runner = CliRunner()
 

@@ -1,5 +1,5 @@
 """Reproduction case for the SQLite WAL-mode-switch race documented in
-NOTES.md (2026-07-08, reproeval/cache.py).
+NOTES.md (2026-07-08, gradetrail/cache.py).
 
 Multiple connections racing to perform the *first* switch of a brand-new
 SQLite file from its default rollback journal to WAL mode can hit
@@ -9,9 +9,9 @@ lock contention; it does not reliably cover this one-time mode-switch, which
 briefly requires an exclusive lock to rewrite the database header. This
 script reproduces that directly with plain sqlite3 and multiprocessing --
 no Ray, no aiosqlite, no asyncio -- to isolate the mechanism from anything
-Ray- or reproeval-specific.
+Ray- or gradetrail-specific.
 
-The actual fix in reproeval lives in ResponseCache.connect()'s bounded retry
+The actual fix in gradetrail lives in ResponseCache.connect()'s bounded retry
 (tests/test_cache.py mocks that retry path directly, since the race itself
 isn't deterministically reproducible on every run -- typically once every
 handful of trials on ordinary hardware, as this script demonstrates).

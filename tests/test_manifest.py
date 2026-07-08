@@ -1,4 +1,4 @@
-"""Tests for reproeval.manifest.write_manifest: the reproducibility record.
+"""Tests for gradetrail.manifest.write_manifest: the reproducibility record.
 
 git SHA lookup is mocked at the subprocess boundary (never depends on this
 repo's actual git state, hermetic either way).
@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-import reproeval.manifest as manifest_module
-from reproeval.manifest import write_manifest
-from reproeval.results import RunSummary
-from reproeval.spec import (
+import gradetrail.manifest as manifest_module
+from gradetrail.manifest import write_manifest
+from gradetrail.results import RunSummary
+from gradetrail.spec import (
     DatasetSpec,
     EvalSpec,
     ExactScorer,
@@ -226,14 +226,14 @@ def test_write_manifest_created_at_is_recent_utc_timestamp(tmp_path: Path) -> No
     assert before <= created_at <= after
 
 
-def test_write_manifest_reproeval_version_matches_installed_package(tmp_path: Path) -> None:
-    import reproeval
+def test_write_manifest_gradetrail_version_matches_installed_package(tmp_path: Path) -> None:
+    import gradetrail
 
     spec = make_spec(tmp_path)
     path = tmp_path / "manifest.json"
     write_manifest(spec, SUMMARY, path)
     data = json.loads(path.read_text())
-    assert data["reproeval_version"] == reproeval.__version__
+    assert data["gradetrail_version"] == gradetrail.__version__
 
 
 def test_write_manifest_includes_summary_fields(tmp_path: Path) -> None:

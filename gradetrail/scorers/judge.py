@@ -18,10 +18,10 @@ import jinja2
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from reproeval.errors import JudgeError, ProviderError
-from reproeval.providers.base import Provider
-from reproeval.scorers.base import ScoreResult
-from reproeval.spec import JudgeScorer
+from gradetrail.errors import JudgeError, ProviderError
+from gradetrail.providers.base import Provider
+from gradetrail.scorers.base import ScoreResult
+from gradetrail.spec import JudgeScorer
 
 _JINJA_ENV = jinja2.Environment(undefined=jinja2.StrictUndefined)
 _NUDGE = "\n\nReply with only the JSON object and no other text."

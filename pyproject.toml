@@ -1,6 +1,6 @@
 [project]
-name = "reproeval"
-version = "0.1.0"
+name = "gradetrail"
+version = "0.1.1"
 description = "A distributed LLM evaluation harness: declarative, cached, reproducible."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -41,8 +41,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Cpatel2000/reproeval"
-Issues = "https://github.com/Cpatel2000/reproeval/issues"
+Repository = "https://github.com/Cpatel2000/gradetrail"
+Issues = "https://github.com/Cpatel2000/gradetrail/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -57,7 +57,7 @@ ray = [
 ]
 
 [project.scripts]
-reproeval = "reproeval.cli:main"
+gradetrail = "gradetrail.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -71,7 +71,7 @@ target-version = "py311"
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["reproeval"]
+known-first-party = ["gradetrail"]
 
 [tool.ruff.lint.flake8-bugbear]
 # typer's API is built around calling Argument()/Option() as argument defaults.
@@ -81,3 +81,6 @@ extend-immutable-calls = ["typer.Argument", "typer.Option"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = ["ray: tests that require a real Ray cluster (ray.init); run with -m \"not ray\" to skip"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["gradetrail"]

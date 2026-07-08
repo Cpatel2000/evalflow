@@ -1,4 +1,4 @@
-"""Tests for reproeval.providers.anthropic: the async Anthropic SDK binding.
+"""Tests for gradetrail.providers.anthropic: the async Anthropic SDK binding.
 
 Mocks only at the SDK boundary (client.messages.create), using hand-built
 anthropic.types.Message/Usage objects and real anthropic exception instances
@@ -20,9 +20,9 @@ from anthropic import (
 )
 from anthropic.types import Message, TextBlock, Usage
 
-from reproeval.errors import ProviderError
-from reproeval.providers.anthropic import AnthropicProvider
-from reproeval.spec import ModelParams
+from gradetrail.errors import ProviderError
+from gradetrail.providers.anthropic import AnthropicProvider
+from gradetrail.spec import ModelParams
 
 MODEL = "claude-sonnet-4-6"
 _REQUEST = httpx.Request("POST", "https://api.anthropic.com/v1/messages")

@@ -1,4 +1,4 @@
-"""Tests for reproeval.runner.local.LocalRunner: the integration point.
+"""Tests for gradetrail.runner.local.LocalRunner: the integration point.
 
 A fake Provider stands in for the SDK (never a real API call). Real
 ResponseCache is used against a tmp_path SQLite file -- cache.py already has
@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from reproeval.errors import JudgeError, ProviderError
-from reproeval.providers.base import ProviderResponse
-from reproeval.runner.local import LocalRunner
-from reproeval.spec import (
+from gradetrail.errors import JudgeError, ProviderError
+from gradetrail.providers.base import ProviderResponse
+from gradetrail.runner.local import LocalRunner
+from gradetrail.spec import (
     DatasetSpec,
     EvalSpec,
     ExactScorer,

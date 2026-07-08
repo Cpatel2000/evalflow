@@ -1,4 +1,4 @@
-"""Eval spec: the public contract of reproeval.
+"""Eval spec: the public contract of gradetrail.
 
 Loading, validation, and run identity live here. See docs/design/eval-spec.md
 for the schema and the semantics the tests enforce. Do not change the schema
@@ -17,7 +17,7 @@ import jinja2
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from reproeval.errors import DatasetError, SpecError
+from gradetrail.errors import DatasetError, SpecError
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _JINJA_ENV = jinja2.Environment(undefined=jinja2.StrictUndefined)

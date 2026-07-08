@@ -1,6 +1,6 @@
-# reproeval
+# gradetrail
 
-[![CI](https://github.com/Cpatel2000/reproeval/actions/workflows/ci.yml/badge.svg)](https://github.com/Cpatel2000/reproeval/actions/workflows/ci.yml)
+[![CI](https://github.com/Cpatel2000/gradetrail/actions/workflows/ci.yml/badge.svg)](https://github.com/Cpatel2000/gradetrail/actions/workflows/ci.yml)
 
 A distributed LLM evaluation harness that treats evals like tests: declarative, cached, reproducible.
 
@@ -11,7 +11,7 @@ A distributed LLM evaluation harness that treats evals like tests: declarative, 
 ## Quickstart
 
 ```bash
-pip install reproeval  # pending; for now: pip install git+https://github.com/Cpatel2000/reproeval
+pip install gradetrail  # pending; for now: pip install git+https://github.com/Cpatel2000/gradetrail
 export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
@@ -46,7 +46,7 @@ scorer:
 Run it:
 
 ```bash
-reproeval run gsm8k_subset.yaml
+gradetrail run gsm8k_subset.yaml
 ```
 
 Output from an actual cold run of this exact spec:
@@ -65,14 +65,14 @@ Run it again and it completes in about 40ms at $0.00: every response is cached, 
 ## Why
 
 - **Cached**: responses are keyed on (provider, model, base_url, resolved prompt, params); re-runs are free, and a prompt edit invalidates only the affected samples.
-- **Reproducible**: every run writes a manifest (spec identity hash, dataset hash, judge file hash, requested vs served model, git SHA, reproeval version).
+- **Reproducible**: every run writes a manifest (spec identity hash, dataset hash, judge file hash, requested vs served model, git SHA, gradetrail version).
 - **Multi-provider**: Anthropic, OpenAI, and any OpenAI-compatible endpoint (vLLM, local inference servers), through one provider abstraction with a shared retry/backoff policy.
 - **Versioned judges**: LLM-as-judge prompts are separate, hashed files, not strings inlined in the spec.
 - **Distributed**: the same spec runs unchanged on a local asyncio backend or a single-machine Ray cluster; the backend is a CLI flag, not a spec field.
 
 ## Prior art
 
-Established tools cover much of this space: [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) for academic benchmarks, [Inspect](https://inspect.ai-safety-institute.org.uk/) for safety evaluations, [promptfoo](https://github.com/promptfoo/promptfoo) for application testing. reproeval differs in three specific choices: the response cache is keyed independently of the scorer, so changing how you grade re-scores for free without re-calling the API; every run's identity is a hash over spec, dataset content, and judge file, so two result sets are comparable exactly when their hashes match; and the local and Ray backends share one spec format and one per-sample pipeline, so distribution is an execution detail rather than a rewrite.
+Established tools cover much of this space: [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness) for academic benchmarks, [Inspect](https://inspect.ai-safety-institute.org.uk/) for safety evaluations, [promptfoo](https://github.com/promptfoo/promptfoo) for application testing. gradetrail differs in three specific choices: the response cache is keyed independently of the scorer, so changing how you grade re-scores for free without re-calling the API; every run's identity is a hash over spec, dataset content, and judge file, so two result sets are comparable exactly when their hashes match; and the local and Ray backends share one spec format and one per-sample pipeline, so distribution is an execution detail rather than a rewrite.
 
 ## Benchmark
 

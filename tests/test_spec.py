@@ -1,4 +1,4 @@
-"""Tests for reproeval.spec: loading, validation, and run identity.
+"""Tests for gradetrail.spec: loading, validation, and run identity.
 
 These encode the semantics in docs/design/eval-spec.md. If a test here needs
 to change, the design doc changes first.
@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from reproeval.errors import DatasetError, SpecError
-from reproeval.spec import compute_identity, load_spec
+from gradetrail.errors import DatasetError, SpecError
+from gradetrail.spec import compute_identity, load_spec
 
 MINIMAL_YAML = """
 name: gsm8k-subset

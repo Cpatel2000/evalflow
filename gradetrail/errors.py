@@ -1,35 +1,35 @@
-"""Exception hierarchy for reproeval.
+"""Exception hierarchy for gradetrail.
 
-All reproeval code raises these instead of bare exceptions so callers can
+All gradetrail code raises these instead of bare exceptions so callers can
 distinguish spec problems from runtime problems.
 """
 
 from __future__ import annotations
 
 
-class ReproevalError(Exception):
-    """Base class for all reproeval errors."""
+class GradetrailError(Exception):
+    """Base class for all gradetrail errors."""
 
 
-class SpecError(ReproevalError):
+class SpecError(GradetrailError):
     """The eval spec is invalid. Message names the field and the fix."""
 
 
-class DatasetError(ReproevalError):
+class DatasetError(GradetrailError):
     """The dataset file is missing, malformed, or incompatible with the spec."""
 
 
-class ProviderError(ReproevalError):
+class ProviderError(GradetrailError):
     """A model provider call failed after retries were exhausted."""
 
 
-class JudgeError(ReproevalError):
+class JudgeError(GradetrailError):
     """A judge response could not be parsed or the judge file is invalid."""
 
 
-class CacheError(ReproevalError):
+class CacheError(GradetrailError):
     """The response cache was misused (e.g. accessed before connect())."""
 
 
-class ResultsError(ReproevalError):
+class ResultsError(GradetrailError):
     """A SampleResult had a state outside the closed set summarize() knows how to count."""

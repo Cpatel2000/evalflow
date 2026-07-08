@@ -1,4 +1,4 @@
-"""Tests for reproeval.scorers.judge: judge-file loading and the LLM-as-judge scorer.
+"""Tests for gradetrail.scorers.judge: judge-file loading and the LLM-as-judge scorer.
 
 Mocks only the Provider boundary (a fake .complete()), with hand-built raw
 reply strings covering malformed JSON, JSON wrapped in markdown fences, and
@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from reproeval.errors import JudgeError, ProviderError
-from reproeval.providers.base import ProviderResponse
-from reproeval.scorers.judge import load_judge_file, score_judge
-from reproeval.spec import JudgeScorer, ModelSpec
+from gradetrail.errors import JudgeError, ProviderError
+from gradetrail.providers.base import ProviderResponse
+from gradetrail.scorers.judge import load_judge_file, score_judge
+from gradetrail.spec import JudgeScorer, ModelSpec
 
 VALID_JUDGE_YAML = """
 version: 2

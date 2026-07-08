@@ -1,7 +1,7 @@
 """Deterministic scorers: exact match and regex.
 
 Can never fail — malformed inputs (bad regex, missing sample fields) are
-already rejected at spec load time (reproeval/spec.py: field_validator on
+already rejected at spec load time (gradetrail/spec.py: field_validator on
 RegexScorer.pattern, and validate_against_dataset() for both `pattern` and
 ExactScorer.target_field against sample 0).
 """
@@ -12,8 +12,8 @@ import re
 
 import jinja2
 
-from reproeval.scorers.base import ScoreResult
-from reproeval.spec import ExactScorer, RegexScorer
+from gradetrail.scorers.base import ScoreResult
+from gradetrail.spec import ExactScorer, RegexScorer
 
 _JINJA_ENV = jinja2.Environment(undefined=jinja2.StrictUndefined)
 
