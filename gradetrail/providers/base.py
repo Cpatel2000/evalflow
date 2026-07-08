@@ -22,8 +22,35 @@ from gradetrail.spec import ModelParams
 
 _BASE_DELAY_S = 0.5
 _MAX_DELAY_S = 20.0
+_RETRY_AFTER_CAP_S = 60.0
 
 _log = structlog.get_logger(__name__)
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Extract a Retry-After delay (seconds) from an SDK exception's response
+    headers, if present and parseable. None otherwise -- caller falls back to
+    normal backoff silently.
+
+    Works identically for the openai and anthropic SDKs without importing
+    either here: both APIStatusError subclasses carry `.response: httpx.Response`
+    (confirmed by reading both SDKs' _exceptions.py), and httpx.Headers is
+    case-insensitive, so `.get("retry-after")` matches however the server
+    actually cased it. APIConnectionError/APITimeoutError (and a plain
+    asyncio TimeoutError) carry no `.response` at all, so getattr falls
+    through to None cleanly for those rather than raising.
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    raw = headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -113,13 +140,25 @@ class Provider(ABC):
             self._log_attempt(
                 attempt=attempt, latency_ms=latency_ms, response=None, outcome="retrying"
             )
-            await self._backoff_sleep(attempt)
+            await self._backoff_sleep(attempt, last_exc)
 
         raise AssertionError("unreachable: loop always returns or raises above")
 
-    async def _backoff_sleep(self, attempt: int) -> None:
+    async def _backoff_sleep(self, attempt: int, exc: Exception) -> None:
+        """Sleep before the next retry attempt.
+
+        A Retry-After header on `exc` (see _retry_after_seconds) takes
+        priority over the computed exponential backoff: sleeps for
+        max(retry_after, computed_backoff), capped at _RETRY_AFTER_CAP_S.
+        Absent or unparseable, falls back to the ordinary jittered
+        exponential backoff silently.
+        """
         backoff = min(_MAX_DELAY_S, _BASE_DELAY_S * 2 ** (attempt - 1))
-        await asyncio.sleep(random.uniform(0, backoff))
+        delay = random.uniform(0, backoff)
+        retry_after = _retry_after_seconds(exc)
+        if retry_after is not None:
+            delay = min(_RETRY_AFTER_CAP_S, max(retry_after, delay))
+        await asyncio.sleep(delay)
 
     def _log_attempt(
         self, *, attempt: int, latency_ms: float, response: ProviderResponse | None, outcome: str

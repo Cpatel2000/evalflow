@@ -35,6 +35,28 @@ class FakeError(Exception):
         self.retryable = retryable
 
 
+class FakeResponse:
+    """Stand-in for httpx.Response -- only .headers.get(...) is ever touched."""
+
+    def __init__(self, headers: dict[str, str] | None = None) -> None:
+        self.headers = headers or {}
+
+
+class FakeErrorWithResponse(FakeError):
+    """A FakeError that also carries a .response, like a real openai/anthropic
+    APIStatusError does (both are confirmed, by reading their _exceptions.py,
+    to carry `.response: httpx.Response`) -- for testing retry-after
+    extraction without needing a real SDK exception. Plain FakeError (no
+    .response attribute at all) stands in for APIConnectionError/
+    APITimeoutError, which carry no response either."""
+
+    def __init__(
+        self, message: str, *, retryable: bool, headers: dict[str, str] | None = None
+    ) -> None:
+        super().__init__(message, retryable=retryable)
+        self.response = FakeResponse(headers)
+
+
 class FakeProvider(Provider):
     """Replays a scripted sequence of outcomes: exceptions, then a final response."""
 
@@ -233,6 +255,130 @@ async def test_backoff_grows_exponentially_and_is_capped(monkeypatch: pytest.Mon
     for delay, cap in zip(delays, caps, strict=True):
         assert 0 <= delay <= cap
     assert caps[-1] == base_module._MAX_DELAY_S  # backoff caps out rather than growing forever
+
+
+# --- retry-after header ---------------------------------------------------------------
+
+
+async def test_retry_after_header_produces_a_sleep_of_at_least_the_header_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def capturing_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(base_module.asyncio, "sleep", capturing_sleep)
+
+    provider = make_provider(
+        FakeProvider,
+        outcomes=[
+            FakeErrorWithResponse("rate limited", retryable=True, headers={"retry-after": "3"}),
+            RESPONSE,
+        ],
+        max_retries=1,
+    )
+    result = await provider.complete("2+2?", PARAMS)
+
+    assert result == RESPONSE
+    assert len(delays) == 1
+    assert delays[0] >= 3.0
+
+
+async def test_retry_after_header_absent_falls_back_to_computed_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def capturing_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(base_module.asyncio, "sleep", capturing_sleep)
+    base_module.random.seed(1234)  # seeded: bound below is reproducible, not just probable
+
+    # FakeError has no .response at all -- getattr(exc, "response", None)
+    # must fall back to normal backoff cleanly, the same as a real
+    # APIConnectionError/APITimeoutError (neither carries a response).
+    provider = make_provider(
+        FakeProvider,
+        outcomes=[FakeError("rate limited", retryable=True), RESPONSE],
+        max_retries=1,
+    )
+    await provider.complete("2+2?", PARAMS)
+
+    assert len(delays) == 1
+    assert 0 <= delays[0] <= base_module._BASE_DELAY_S  # attempt 1's ordinary backoff cap
+
+
+async def test_retry_after_header_capped_at_sixty_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    delays: list[float] = []
+
+    async def capturing_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(base_module.asyncio, "sleep", capturing_sleep)
+
+    provider = make_provider(
+        FakeProvider,
+        outcomes=[
+            FakeErrorWithResponse("rate limited", retryable=True, headers={"retry-after": "120"}),
+            RESPONSE,
+        ],
+        max_retries=1,
+    )
+    await provider.complete("2+2?", PARAMS)
+
+    assert len(delays) == 1
+    assert delays[0] == 60.0
+
+
+async def test_retry_after_header_unparseable_falls_back_to_computed_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def capturing_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(base_module.asyncio, "sleep", capturing_sleep)
+    base_module.random.seed(1234)
+
+    provider = make_provider(
+        FakeProvider,
+        outcomes=[
+            FakeErrorWithResponse(
+                "rate limited", retryable=True, headers={"retry-after": "not-a-number"}
+            ),
+            RESPONSE,
+        ],
+        max_retries=1,
+    )
+    await provider.complete("2+2?", PARAMS)  # must not raise on the bad header value
+
+    assert len(delays) == 1
+    assert 0 <= delays[0] <= base_module._BASE_DELAY_S
+
+
+async def test_connection_error_with_no_response_uses_normal_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    async def capturing_sleep(seconds: float) -> None:
+        delays.append(seconds)
+
+    monkeypatch.setattr(base_module.asyncio, "sleep", capturing_sleep)
+    base_module.random.seed(1234)
+
+    provider = make_provider(
+        FakeProvider,
+        outcomes=[FakeError("connection reset", retryable=True), RESPONSE],
+        max_retries=1,
+    )
+    await provider.complete("2+2?", PARAMS)
+
+    assert len(delays) == 1
+    assert 0 <= delays[0] <= base_module._BASE_DELAY_S
 
 
 # --- structured logging ------------------------------------------------------------------
