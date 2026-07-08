@@ -6,8 +6,11 @@ canonical JSON of (provider, model, base_url, resolved prompt, params).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import random
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +27,10 @@ CREATE TABLE IF NOT EXISTS responses (
     created_at TEXT NOT NULL
 )
 """
+
+_CONNECT_MAX_ATTEMPTS = 5
+_CONNECT_RETRY_MIN_S = 0.05
+_CONNECT_RETRY_MAX_S = 0.2
 
 
 def _canonical_json(obj: object) -> str:
@@ -63,16 +70,48 @@ class ResponseCache:
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
+        """Connect and prepare the schema, retrying on transient lock contention.
+
+        Multiple connections racing to perform the *initial* switch of a
+        brand-new file from the default rollback journal to WAL can hit
+        sqlite3.OperationalError("database is locked") even with busy_timeout
+        already set -- busy_timeout governs ordinary read/write lock
+        contention, not this one-time mode-switch race (see NOTES.md). This
+        invariant belongs here, not in every orchestrator that happens to
+        connect concurrently, so it can't be silently reintroduced by a future
+        caller. A real, non-transient failure to enable WAL (e.g. an
+        unsupported filesystem) still raises immediately, unretried.
+        """
+        last_exc: sqlite3.OperationalError | None = None
+        for attempt in range(1, _CONNECT_MAX_ATTEMPTS + 1):
+            try:
+                self._conn = await self._try_connect()
+                return
+            except sqlite3.OperationalError as exc:
+                last_exc = exc
+                if attempt == _CONNECT_MAX_ATTEMPTS:
+                    break
+                await asyncio.sleep(random.uniform(_CONNECT_RETRY_MIN_S, _CONNECT_RETRY_MAX_S))
+        raise CacheError(
+            f"could not connect to {self._path} after {_CONNECT_MAX_ATTEMPTS} attempts "
+            f"(likely concurrent connections racing the initial WAL switch): {last_exc}"
+        ) from last_exc
+
+    async def _try_connect(self) -> aiosqlite.Connection:
         conn = await aiosqlite.connect(self._path)
+        # busy_timeout first: it defaults to 0 on a fresh connection, and
+        # switching journal_mode requires a lock -- if that pragma runs before
+        # busy_timeout is set, a connection racing a concurrent writer fails
+        # immediately with "database is locked" instead of waiting.
+        await conn.execute("PRAGMA busy_timeout=5000")
         async with conn.execute("PRAGMA journal_mode=WAL") as cursor:
             (mode,) = await cursor.fetchone()
         if mode.lower() != "wal":
             await conn.close()
             raise CacheError(f"could not enable WAL journal mode (got {mode!r}) at {self._path}")
-        await conn.execute("PRAGMA busy_timeout=5000")
         await conn.execute(_SCHEMA)
         await conn.commit()
-        self._conn = conn
+        return conn
 
     async def close(self) -> None:
         if self._conn is not None:

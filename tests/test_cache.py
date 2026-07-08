@@ -8,11 +8,13 @@ Changing any one component, and nothing else, must change the key.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+import evalflow.cache as cache_module
 from evalflow.cache import ResponseCache, cache_key
 from evalflow.errors import CacheError
 
@@ -155,6 +157,83 @@ async def test_connect_enables_wal_journal_mode(db_path: Path) -> None:
         async with conn.execute("PRAGMA journal_mode") as cursor:
             (mode,) = await cursor.fetchone()
         assert mode.lower() == "wal"
+
+
+# --- connect(): retry on transient lock contention -----------------------------
+
+
+class _RaiseOnAwait:
+    """Awaiting this raises the given exception -- lets aiosqlite.connect(...)
+    itself (which returns something awaitable) fail without a real connection."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    def __await__(self):
+        async def _raise() -> None:
+            raise self._exc
+
+        return _raise().__await__()
+
+
+async def test_connect_retries_transient_operational_error_then_succeeds(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(cache_module.asyncio, "sleep", instant_sleep)
+
+    real_connect = cache_module.aiosqlite.connect
+    calls = {"n": 0}
+
+    def flaky_connect(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return _RaiseOnAwait(sqlite3.OperationalError("database is locked"))
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(cache_module.aiosqlite, "connect", flaky_connect)
+
+    async with ResponseCache(db_path) as cache:
+        # the pragmas ran for real on the successful (3rd) attempt: WAL is
+        # enabled and a genuine put/get round-trip works, not just "no exception".
+        conn = cache._conn
+        assert conn is not None
+        async with conn.execute("PRAGMA journal_mode") as cursor:
+            (mode,) = await cursor.fetchone()
+        assert mode.lower() == "wal"
+
+        await cache.put(**BASE_KWARGS, response=RESPONSE)
+        entry = await cache.get(**BASE_KWARGS)
+        assert entry is not None
+        assert entry.response == RESPONSE
+
+    assert calls["n"] == 3  # 2 simulated failures + 1 real success
+
+
+async def test_connect_raises_cache_error_after_exhausting_retries(
+    db_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(cache_module.asyncio, "sleep", instant_sleep)
+
+    calls = {"n": 0}
+
+    def always_flaky_connect(*args: object, **kwargs: object) -> object:
+        calls["n"] += 1
+        return _RaiseOnAwait(sqlite3.OperationalError("database is locked"))
+
+    monkeypatch.setattr(cache_module.aiosqlite, "connect", always_flaky_connect)
+
+    cache = ResponseCache(db_path)
+    with pytest.raises(CacheError) as exc_info:
+        await cache.connect()
+
+    assert isinstance(exc_info.value.__cause__, sqlite3.OperationalError)
+    assert calls["n"] == cache_module._CONNECT_MAX_ATTEMPTS  # bounded, not unbounded retry
 
 
 async def test_two_connections_to_same_file_share_cache_state(db_path: Path) -> None:
