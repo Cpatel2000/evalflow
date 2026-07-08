@@ -116,6 +116,6 @@ Only the last 8 reflect the model actually being wrong.
 
 ## Design
 
-See [docs/design/eval-spec.md](docs/design/eval-spec.md) for the spec schema and semantics. A writeup of debugging an intermittent SQLite WAL race under Ray is in [docs/blog/](docs/blog/).
+See [docs/design/eval-spec.md](docs/design/eval-spec.md) for the spec schema and semantics. A writeup of debugging an intermittent SQLite WAL race (https://chitvanpatel.com/blog/sqlite-wal-race-under-ray.html).
 
 MIT license.
