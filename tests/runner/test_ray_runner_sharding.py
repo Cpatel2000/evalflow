@@ -71,5 +71,6 @@ def test_require_ray_raises_evalflow_error_when_ray_missing(
 
 
 def test_require_ray_returns_the_module_when_installed() -> None:
+    pytest.importorskip("ray")
     ray = _require_ray()
     assert ray.__name__ == "ray"
