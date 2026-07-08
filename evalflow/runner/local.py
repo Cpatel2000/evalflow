@@ -5,6 +5,11 @@ and cache the raw response, then score. A provider failure or a judge error on
 one sample becomes a SampleResult in the appropriate error state -- it never
 aborts the run or takes down sibling tasks (except a real cancellation, which
 must still propagate; see the CancelledError note in providers/base.py).
+
+run_one_sample (and the private helpers it calls) are module-level, not
+LocalRunner methods: they take no `self` and close over nothing, so
+runner/ray_runner.py can call the exact same per-sample pipeline from inside
+a Ray task running in a separate process, instead of duplicating it.
 """
 
 from __future__ import annotations
@@ -75,6 +80,109 @@ def _error_result(sample_id: str, detail: str) -> SampleResult:
     )
 
 
+async def run_one_sample(
+    spec: EvalSpec,
+    sample: dict,
+    provider: Provider,
+    judge_provider: Provider | None,
+    judge_file: JudgeFile | None,
+    cache: ResponseCache,
+    semaphore: asyncio.Semaphore,
+) -> SampleResult:
+    """The per-sample pipeline shared by every runner: render, cache check,
+    complete-or-cache-hit, score -- under a concurrency semaphore.
+
+    Never raises for expected failure modes (ProviderError, judge failures);
+    those become a SampleResult in the appropriate error state (design doc
+    rule 5). A real task cancellation still propagates: CancelledError is
+    BaseException, not Exception (see providers/base.py NOTES.md entry), so
+    it matches neither except clause below.
+    """
+    sample_id = str(sample[spec.dataset.id_field])
+    async with semaphore:
+        start = time.monotonic()
+        try:
+            result = await _score_one(
+                spec, sample, sample_id, provider, judge_provider, judge_file, cache
+            )
+        except ProviderError as exc:
+            result = _error_result(sample_id, str(exc))
+        except Exception as exc:  # noqa: BLE001 -- task isolation: one bad
+            # sample must never crash the run or its siblings.
+            result = _error_result(sample_id, f"unexpected error: {exc!r}")
+        elapsed_ms = (time.monotonic() - start) * 1000
+
+    _log.info(
+        "sample_completed",
+        sample_id=sample_id,
+        state=result.state,
+        cached=result.cached,
+        latency_ms=round(elapsed_ms, 2),
+    )
+    return result
+
+
+async def _score_one(
+    spec: EvalSpec,
+    sample: dict,
+    sample_id: str,
+    provider: Provider,
+    judge_provider: Provider | None,
+    judge_file: JudgeFile | None,
+    cache: ResponseCache,
+) -> SampleResult:
+    prompt = _JINJA_ENV.from_string(spec.prompt).render(**sample)
+    params_dict = spec.model.params.model_dump()
+
+    cache_entry = await cache.get(
+        spec.model.provider, spec.model.name, spec.model.base_url, prompt, params_dict
+    )
+    cached = cache_entry is not None
+    if cached:
+        response = ProviderResponse(**cache_entry.response)
+    else:
+        response = await provider.complete(prompt, spec.model.params)
+        await cache.put(
+            spec.model.provider,
+            spec.model.name,
+            spec.model.base_url,
+            prompt,
+            params_dict,
+            dataclasses.asdict(response),
+        )
+    score_result = await _score(spec, sample, response.text, judge_provider, judge_file)
+
+    return SampleResult(
+        sample_id=sample_id,
+        state=score_result.state,
+        score=score_result.score if score_result.state == "scored" else None,
+        response_text=response.text,
+        input_tokens=response.input_tokens,
+        output_tokens=response.output_tokens,
+        latency_ms=response.latency_ms,
+        cached=cached,
+        detail=score_result.detail,
+        served_model=response.model if score_result.state == "scored" else None,
+    )
+
+
+async def _score(
+    spec: EvalSpec,
+    sample: dict,
+    response_text: str,
+    judge_provider: Provider | None,
+    judge_file: JudgeFile | None,
+) -> ScoreResult:
+    scorer = spec.scorer
+    if isinstance(scorer, ExactScorer):
+        return score_exact(sample, response_text, scorer)
+    if isinstance(scorer, RegexScorer):
+        return score_regex(sample, response_text, scorer)
+    assert judge_provider is not None
+    assert judge_file is not None
+    return await score_judge(sample, response_text, scorer, judge_file, judge_provider)
+
+
 class LocalRunner(Runner):
     """Runs an eval spec locally: one ResponseCache and one Provider per model,
     constructed once per run, not once per sample.
@@ -106,7 +214,7 @@ class LocalRunner(Runner):
         async with ResponseCache(self._cache_path) as cache:
             results = await asyncio.gather(
                 *(
-                    self._run_one(
+                    run_one_sample(
                         spec, sample, provider, judge_provider, judge_file, cache, semaphore
                     )
                     for sample in samples
@@ -116,99 +224,3 @@ class LocalRunner(Runner):
         wall_time_s = time.monotonic() - start
         summary = summarize(list(results), spec.model, wall_time_s)
         return list(results), summary
-
-    async def _run_one(
-        self,
-        spec: EvalSpec,
-        sample: dict,
-        provider: Provider,
-        judge_provider: Provider | None,
-        judge_file: JudgeFile | None,
-        cache: ResponseCache,
-        semaphore: asyncio.Semaphore,
-    ) -> SampleResult:
-        sample_id = str(sample[spec.dataset.id_field])
-        async with semaphore:
-            start = time.monotonic()
-            try:
-                result = await self._score_one(
-                    spec, sample, sample_id, provider, judge_provider, judge_file, cache
-                )
-            except ProviderError as exc:
-                result = _error_result(sample_id, str(exc))
-            except Exception as exc:  # noqa: BLE001 -- task isolation: one bad
-                # sample must never crash the run or its siblings. CancelledError
-                # is BaseException, not Exception, so real cancellation still
-                # propagates through this unharmed (see providers/base.py NOTES).
-                result = _error_result(sample_id, f"unexpected error: {exc!r}")
-            elapsed_ms = (time.monotonic() - start) * 1000
-
-        _log.info(
-            "sample_completed",
-            sample_id=sample_id,
-            state=result.state,
-            cached=result.cached,
-            latency_ms=round(elapsed_ms, 2),
-        )
-        return result
-
-    async def _score_one(
-        self,
-        spec: EvalSpec,
-        sample: dict,
-        sample_id: str,
-        provider: Provider,
-        judge_provider: Provider | None,
-        judge_file: JudgeFile | None,
-        cache: ResponseCache,
-    ) -> SampleResult:
-        prompt = _JINJA_ENV.from_string(spec.prompt).render(**sample)
-        params_dict = spec.model.params.model_dump()
-
-        cache_entry = await cache.get(
-            spec.model.provider, spec.model.name, spec.model.base_url, prompt, params_dict
-        )
-        cached = cache_entry is not None
-        if cached:
-            response = ProviderResponse(**cache_entry.response)
-        else:
-            response = await provider.complete(prompt, spec.model.params)
-            await cache.put(
-                spec.model.provider,
-                spec.model.name,
-                spec.model.base_url,
-                prompt,
-                params_dict,
-                dataclasses.asdict(response),
-            )
-        score_result = await self._score(spec, sample, response.text, judge_provider, judge_file)
-
-        return SampleResult(
-            sample_id=sample_id,
-            state=score_result.state,
-            score=score_result.score if score_result.state == "scored" else None,
-            response_text=response.text,
-            input_tokens=response.input_tokens,
-            output_tokens=response.output_tokens,
-            latency_ms=response.latency_ms,
-            cached=cached,
-            detail=score_result.detail,
-            served_model=response.model if score_result.state == "scored" else None,
-        )
-
-    async def _score(
-        self,
-        spec: EvalSpec,
-        sample: dict,
-        response_text: str,
-        judge_provider: Provider | None,
-        judge_file: JudgeFile | None,
-    ) -> ScoreResult:
-        scorer = spec.scorer
-        if isinstance(scorer, ExactScorer):
-            return score_exact(sample, response_text, scorer)
-        if isinstance(scorer, RegexScorer):
-            return score_regex(sample, response_text, scorer)
-        assert judge_provider is not None
-        assert judge_file is not None
-        return await score_judge(sample, response_text, scorer, judge_file, judge_provider)

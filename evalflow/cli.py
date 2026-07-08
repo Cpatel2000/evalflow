@@ -7,6 +7,8 @@ runner/local.py, results.py, and manifest.py.
 from __future__ import annotations
 
 import asyncio
+import enum
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,11 +18,21 @@ from evalflow.errors import DatasetError, SpecError
 from evalflow.manifest import write_manifest
 from evalflow.results import RunSummary, write_jsonl
 from evalflow.runner.local import LocalRunner
+from evalflow.runner.ray_runner import RayRunner
 from evalflow.spec import compute_identity, load_spec
 
 app = typer.Typer()
 
 _DEFAULT_CACHE_PATH = Path(".evalflow_cache.sqlite")
+_MAX_DEFAULT_WORKERS = 8
+
+
+class Backend(enum.StrEnum):
+    """Execution backend. The spec itself stays execution-agnostic (design doc);
+    this choice is CLI-level only."""
+
+    local = "local"
+    ray = "ray"
 
 
 @app.callback()
@@ -34,6 +46,12 @@ def run(
     output_dir: Path | None = typer.Option(
         None, "--output-dir", help="Defaults to ./results/<name>-<identity_hash[:8]>/"
     ),
+    backend: Backend = typer.Option(Backend.local, "--backend", help="Execution backend."),
+    workers: int | None = typer.Option(
+        None,
+        "--workers",
+        help=("Ray worker count (--backend ray only). Defaults to os.cpu_count() capped at 8."),
+    ),
 ) -> None:
     """Run an eval spec and write results.jsonl + manifest.json."""
     try:
@@ -44,7 +62,14 @@ def run(
         resolved_output_dir = output_dir or Path("results") / f"{spec.name}-{identity_hash[:8]}"
         resolved_output_dir.mkdir(parents=True, exist_ok=True)
 
-        runner = LocalRunner(cache_path=_DEFAULT_CACHE_PATH)
+        if backend == Backend.ray:
+            n_workers = (
+                workers if workers is not None else min(os.cpu_count() or 1, _MAX_DEFAULT_WORKERS)
+            )
+            runner = RayRunner(cache_path=_DEFAULT_CACHE_PATH, n_workers=n_workers)
+        else:
+            runner = LocalRunner(cache_path=_DEFAULT_CACHE_PATH)
+
         results, summary = asyncio.run(runner.run(spec))
 
         served_models = {r.served_model for r in results if r.served_model}

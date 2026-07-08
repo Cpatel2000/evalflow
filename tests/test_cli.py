@@ -1,10 +1,11 @@
 """Tests for evalflow.cli: argument wiring, output paths, exit codes.
 
-LocalRunner is stubbed out here -- runner internals (concurrency, caching,
-scoring, provider failures) are already covered by tests/runner/test_local.py.
+LocalRunner and RayRunner are stubbed out here -- runner internals
+(concurrency, caching, scoring, provider failures, real Ray execution) are
+already covered by tests/runner/test_local.py and tests/runner/test_ray_runner.py.
 These tests exercise only cli.py's own wiring: spec loading/validation,
-output-dir defaulting, file writing, exit codes, and the summary print. Never
-a real provider, never a real LocalRunner.
+--backend/--workers dispatch, output-dir defaulting, file writing, exit
+codes, and the summary print. Never a real provider, never a real runner.
 """
 
 from __future__ import annotations
@@ -75,6 +76,23 @@ class _StubRunner:
 @pytest.fixture(autouse=True)
 def stub_local_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "LocalRunner", _StubRunner)
+
+
+@pytest.fixture()
+def ray_runner_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Stub RayRunner that records its constructor kwargs, so --backend/--workers
+    wiring can be asserted without ever touching a real Ray cluster."""
+    calls: list[dict] = []
+
+    class _StubRayRunner:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+
+        async def run(self, spec: object) -> tuple[list[SampleResult], RunSummary]:
+            return FAKE_RESULTS, FAKE_SUMMARY
+
+    monkeypatch.setattr(cli_module, "RayRunner", _StubRayRunner)
+    return calls
 
 
 @pytest.fixture()
@@ -191,3 +209,82 @@ def test_run_missing_spec_file_exits_1(tmp_path: Path) -> None:
     result = runner.invoke(cli_module.app, ["run", str(tmp_path / "missing.yaml")])
     assert result.exit_code == 1
     assert "Traceback" not in result.output
+
+
+# --- --backend / --workers wiring ---------------------------------------------------
+
+
+def test_run_default_backend_never_constructs_ray_runner(
+    spec_file: Path, tmp_path: Path, ray_runner_calls: list[dict]
+) -> None:
+    output_dir = tmp_path / "out"
+    result = runner.invoke(cli_module.app, ["run", str(spec_file), "--output-dir", str(output_dir)])
+    assert result.exit_code == 0
+    assert ray_runner_calls == []
+
+
+def test_run_backend_ray_dispatches_to_ray_runner(
+    spec_file: Path, tmp_path: Path, ray_runner_calls: list[dict]
+) -> None:
+    output_dir = tmp_path / "out"
+    result = runner.invoke(
+        cli_module.app,
+        ["run", str(spec_file), "--output-dir", str(output_dir), "--backend", "ray"],
+    )
+    assert result.exit_code == 0
+    assert len(ray_runner_calls) == 1
+    assert (output_dir / "results.jsonl").exists()
+    assert (output_dir / "manifest.json").exists()
+
+
+def test_run_backend_ray_with_explicit_workers(
+    spec_file: Path, tmp_path: Path, ray_runner_calls: list[dict]
+) -> None:
+    output_dir = tmp_path / "out"
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "run",
+            str(spec_file),
+            "--output-dir",
+            str(output_dir),
+            "--backend",
+            "ray",
+            "--workers",
+            "4",
+        ],
+    )
+    assert result.exit_code == 0
+    assert ray_runner_calls[0]["n_workers"] == 4
+
+
+def test_run_backend_ray_default_workers_is_cpu_count_capped_at_8(
+    spec_file: Path,
+    tmp_path: Path,
+    ray_runner_calls: list[dict],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_module.os, "cpu_count", lambda: 32)
+    output_dir = tmp_path / "out"
+    result = runner.invoke(
+        cli_module.app,
+        ["run", str(spec_file), "--output-dir", str(output_dir), "--backend", "ray"],
+    )
+    assert result.exit_code == 0
+    assert ray_runner_calls[0]["n_workers"] == 8
+
+
+def test_run_backend_ray_default_workers_below_cap_uses_cpu_count(
+    spec_file: Path,
+    tmp_path: Path,
+    ray_runner_calls: list[dict],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli_module.os, "cpu_count", lambda: 4)
+    output_dir = tmp_path / "out"
+    result = runner.invoke(
+        cli_module.app,
+        ["run", str(spec_file), "--output-dir", str(output_dir), "--backend", "ray"],
+    )
+    assert result.exit_code == 0
+    assert ray_runner_calls[0]["n_workers"] == 4
