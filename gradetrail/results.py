@@ -73,6 +73,10 @@ class RunSummary:
     # Decimal. Lets a summary say *why* cost is unknown instead of just that
     # it is -- see cli.py's _print_summary.
     cost_unpriced_models: tuple[str, ...] = ()
+    # Set by the runner (not computed here) when the run stopped early
+    # because the first several samples all failed identically -- the shared
+    # failure detail, or None if the run ran to completion normally.
+    aborted_reason: str | None = None
 
 
 def summarize(
@@ -81,6 +85,7 @@ def summarize(
     wall_time_s: float,
     *,
     judge_model: ModelSpec | None = None,
+    aborted_reason: str | None = None,
 ) -> RunSummary:
     """Reduce results to a RunSummary. Raises ResultsError on an unrecognized state.
 
@@ -95,6 +100,10 @@ def summarize(
     only the primary response's cache status, and judge calls are never
     cached (see NOTES.md), so a fully-cached primary run with a judge scorer
     still has real, nonzero cost from the judge calls alone.
+
+    aborted_reason is a pure pass-through onto RunSummary: the runner (not
+    this function) detects an early-abort and already knows the shared
+    failure detail, so there is nothing for summarize() itself to compute.
     """
     primary_prices = PRICING.get((model.provider, model.name))
     judge_prices = PRICING.get((judge_model.provider, judge_model.name)) if judge_model else None
@@ -162,6 +171,7 @@ def summarize(
         total_judge_input_tokens=total_judge_input_tokens,
         total_judge_output_tokens=total_judge_output_tokens,
         cost_unpriced_models=tuple(cost_unpriced),
+        aborted_reason=aborted_reason,
     )
 
 

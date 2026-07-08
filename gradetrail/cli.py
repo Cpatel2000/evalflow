@@ -85,7 +85,17 @@ def run(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
 
+    if summary.aborted_reason is not None:
+        typer.echo(
+            "ABORTED: run stopped early -- multiple samples failed with an "
+            f"identical fatal error: {summary.aborted_reason}",
+            err=True,
+        )
+
     _print_summary(summary)
+
+    if summary.aborted_reason is not None:
+        raise typer.Exit(code=1)
 
 
 def _print_summary(summary: RunSummary) -> None:

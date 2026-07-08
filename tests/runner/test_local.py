@@ -16,7 +16,8 @@ import pytest
 
 from gradetrail.errors import JudgeError, ProviderError
 from gradetrail.providers.base import ProviderResponse
-from gradetrail.runner.local import LocalRunner
+from gradetrail.results import RunSummary
+from gradetrail.runner.local import _ABORT_THRESHOLD, _SKIPPED_DETAIL, LocalRunner
 from gradetrail.spec import (
     DatasetSpec,
     EvalSpec,
@@ -397,6 +398,198 @@ async def test_judge_error_sample_still_reports_judge_tokens_consumed(tmp_path: 
     assert results[0].judge_output_tokens == 10
     assert summary.total_judge_input_tokens == 20
     assert summary.total_judge_output_tokens == 10
+
+
+# --- fail-fast on uniform fatal errors --------------------------------------------------
+
+
+class StaggeredProvider:
+    """Like FakeProvider, but each call's delay is proportional to a numeric
+    suffix parsed out of the prompt ("q7" -> 7 * base_delay_s), so completion
+    order is fully deterministic even under real concurrency. FakeProvider's
+    single uniform work_s can't guarantee this: two calls with the same delay
+    have no guaranteed relative completion order, and these tests need to pin
+    exactly which N complete first, which are still genuinely in flight at
+    the moment of cancellation, and whether original order survives a
+    reversal of completion order.
+    """
+
+    def __init__(self, *, base_delay_s: float = 0.02, fail: bool = True) -> None:
+        self.base_delay_s = base_delay_s
+        self.fail = fail
+        self.calls: list[str] = []
+
+    async def complete(self, prompt: str, params: object) -> ProviderResponse:
+        self.calls.append(prompt)
+        index = int(prompt.removeprefix("q"))
+        await asyncio.sleep(self.base_delay_s * index)
+        if self.fail:
+            # Deliberately NOT prompt-specific: a real uniform fatal error
+            # (missing API key, no-credits account) reports the identical
+            # message regardless of which sample triggered it.
+            raise ProviderError("fake provider: simulated identical fatal failure")
+        return ProviderResponse(
+            text="42", input_tokens=1, output_tokens=1, latency_ms=1.0, model="fake-model"
+        )
+
+
+def _staggered_rows(n: int) -> list[dict]:
+    return [{"id": str(i), "question": f"q{i}", "answer": "42"} for i in range(1, n + 1)]
+
+
+async def test_uniform_fatal_errors_abort_the_run_early(tmp_path: Path) -> None:
+    n_samples = 20
+    spec = make_spec(tmp_path, samples=_staggered_rows(n_samples), concurrency=8)
+    fake = StaggeredProvider(fail=True)
+    runner = LocalRunner(cache_path=tmp_path / "cache.sqlite", provider_factory=lambda m, r: fake)
+
+    results, summary = await runner.run(spec)
+
+    assert len(results) == n_samples
+    assert sorted(r.sample_id for r in results) == sorted(str(i) for i in range(1, n_samples + 1))
+
+    real_failures = [r for r in results if r.detail != _SKIPPED_DETAIL]
+    skipped = [r for r in results if r.detail == _SKIPPED_DETAIL]
+    assert len(real_failures) == _ABORT_THRESHOLD
+    assert len(skipped) == n_samples - _ABORT_THRESHOLD
+    assert all(r.state == "provider_error" for r in results)
+
+    assert summary.aborted_reason == real_failures[0].detail
+
+    # The semaphore is a sliding window, not fixed batches of 8: the instant
+    # q1 fails and releases its slot, the next queued sample (q9) immediately
+    # backfills it -- by the time q5's completion trips the abort, more than
+    # 8 samples may already have started. What's guaranteed regardless of
+    # that timing detail: at least the 5 that tripped the predicate started
+    # (fake.calls isn't empty), and strictly fewer than all 20 did (real
+    # requests were actually avoided, not just relabeled after the fact).
+    assert _ABORT_THRESHOLD <= len(fake.calls) < n_samples
+
+
+async def test_cancelled_in_flight_tasks_produce_exactly_one_skipped_result_each(
+    tmp_path: Path,
+) -> None:
+    """The specific risk flagged in review: task.cancel() raises CancelledError
+    inside the cancelled task, which run_one_sample's own except clauses must
+    NOT catch-and-misreport as an ordinary provider_error (they only catch
+    Exception, never BaseException -- CancelledError is deliberately outside
+    that net, see providers/base.py's NOTES.md entry on the same point).
+
+    Two separate claims, asserted explicitly rather than one standing in for
+    the other: (1) no result's detail mentions CancelledError, and (2)
+    runner.run() actually completed -- returned a real, fully-formed summary
+    from summarize() -- rather than merely "not raising" for some unrelated
+    reason (a hang that timed out at the test-runner level, a swallowed
+    exception turning into a degenerate empty return, etc). A future refactor
+    could satisfy claim (1) by accident while breaking claim (2); pinning
+    both means it can't.
+    """
+    n_samples = 20
+    spec = make_spec(tmp_path, samples=_staggered_rows(n_samples), concurrency=8)
+    fake = StaggeredProvider(fail=True)
+    runner = LocalRunner(cache_path=tmp_path / "cache.sqlite", provider_factory=lambda m, r: fake)
+
+    results, summary = await asyncio.wait_for(runner.run(spec), timeout=5.0)
+
+    # claim 2: a genuine, fully-reduced RunSummary came back, not a hang or a
+    # degenerate empty/partial return from a swallowed cancellation.
+    assert isinstance(summary, RunSummary)
+    assert summary.n_samples == n_samples
+    assert summary.aborted_reason is not None
+
+    # exactly one SampleResult per original sample: no duplicates (a task
+    # that somehow produced both a normal result and a cancellation
+    # replacement) and no gaps (a task that vanished).
+    ids = sorted(r.sample_id for r in results)
+    assert ids == sorted(str(i) for i in range(1, n_samples + 1))
+    assert len(ids) == len(set(ids))
+
+    # claim 1: no result carries a leaked CancelledError instead of the
+    # intended skipped/real-failure detail.
+    for r in results:
+        assert r.detail is not None
+        assert "CancelledError" not in r.detail
+
+
+async def test_one_success_before_failures_prevents_abort(tmp_path: Path) -> None:
+    n_samples = 8
+
+    class SuccessThenFailProvider:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def complete(self, prompt: str, params: object) -> ProviderResponse:
+            self.calls.append(prompt)
+            if prompt == "q1":
+                return ProviderResponse(
+                    text="42", input_tokens=1, output_tokens=1, latency_ms=1.0, model="fake-model"
+                )
+            raise ProviderError("fake provider: simulated identical fatal failure")
+
+    spec = make_spec(tmp_path, samples=_staggered_rows(n_samples), concurrency=1)
+    fake = SuccessThenFailProvider()
+    runner = LocalRunner(cache_path=tmp_path / "cache.sqlite", provider_factory=lambda m, r: fake)
+
+    results, summary = await runner.run(spec)
+
+    # q1 succeeds, q2-q8 fail identically -- but with concurrency=1,
+    # completion order == submission order, so q1's success is among the
+    # first _ABORT_THRESHOLD completions and must prevent the abort.
+    assert summary.aborted_reason is None
+    assert not any(r.detail == _SKIPPED_DETAIL for r in results)
+    assert len(fake.calls) == n_samples  # every sample actually ran, nothing skipped
+
+
+async def test_mixed_error_messages_prevent_abort(tmp_path: Path) -> None:
+    n_samples = 8
+
+    class DistinctFailureProvider:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def complete(self, prompt: str, params: object) -> ProviderResponse:
+            self.calls.append(prompt)
+            raise ProviderError(f"fake provider: distinct failure for {prompt!r}")
+
+    spec = make_spec(tmp_path, samples=_staggered_rows(n_samples), concurrency=1)
+    fake = DistinctFailureProvider()
+    runner = LocalRunner(cache_path=tmp_path / "cache.sqlite", provider_factory=lambda m, r: fake)
+
+    results, summary = await runner.run(spec)
+
+    # every sample fails, but each with a DIFFERENT detail (the prompt is
+    # embedded in the message) -- the first _ABORT_THRESHOLD failures don't
+    # share one detail string, so the run must not abort.
+    assert summary.aborted_reason is None
+    assert not any(r.detail == _SKIPPED_DETAIL for r in results)
+    assert len(fake.calls) == n_samples
+
+
+async def test_order_preserved_despite_reversed_completion_order(tmp_path: Path) -> None:
+    n_samples = 10
+
+    class ReversedOrderProvider:
+        """Later samples finish first (q1 has the longest delay, q10 the
+        shortest) -- completion order is the exact reverse of submission
+        order, deliberately hostile to any code that conflates the two."""
+
+        def __init__(self, *, base_delay_s: float = 0.02) -> None:
+            self.base_delay_s = base_delay_s
+
+        async def complete(self, prompt: str, params: object) -> ProviderResponse:
+            index = int(prompt.removeprefix("q"))
+            await asyncio.sleep(self.base_delay_s * (n_samples - index))
+            return ProviderResponse(
+                text="42", input_tokens=1, output_tokens=1, latency_ms=1.0, model="fake-model"
+            )
+
+    spec = make_spec(tmp_path, samples=_staggered_rows(n_samples), concurrency=n_samples)
+    fake = ReversedOrderProvider()
+    runner = LocalRunner(cache_path=tmp_path / "cache.sqlite", provider_factory=lambda m, r: fake)
+
+    results, _ = await runner.run(spec)
+
+    assert [r.sample_id for r in results] == [str(i) for i in range(1, n_samples + 1)]
 
 
 # --- sample_id -------------------------------------------------------------------------

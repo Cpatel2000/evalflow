@@ -41,6 +41,13 @@ _log = structlog.get_logger(__name__)
 
 ProviderFactory = Callable[[ModelSpec, RunSpec], Provider]
 
+# If the first this-many completed samples are all provider_error with an
+# identical detail (e.g. a missing API key, or a no-credits account), the run
+# aborts early rather than repeating the same doomed request hundreds of
+# times -- see NOTES.md.
+_ABORT_THRESHOLD = 5
+_SKIPPED_DETAIL = f"skipped: aborted after {_ABORT_THRESHOLD} identical fatal errors"
+
 
 def _default_provider_factory(model: ModelSpec, run: RunSpec) -> Provider:
     if model.provider == "anthropic":
@@ -78,6 +85,27 @@ def _error_result(sample_id: str, detail: str) -> SampleResult:
         cached=False,
         detail=detail,
     )
+
+
+def _uniform_fatal_failure(results: list[SampleResult]) -> str | None:
+    """If the first _ABORT_THRESHOLD entries of `results` (already in the
+    order they actually completed, not necessarily submission order) are all
+    provider_error with the exact same detail, return that shared detail --
+    the run should abort. Otherwise None: not enough completions yet, a
+    success is mixed in, or the failures don't share one detail string.
+
+    Pure and shared: LocalRunner drives this per-completion, RayRunner drives
+    it per-batch, but the trigger condition itself lives in exactly one place.
+    """
+    if len(results) < _ABORT_THRESHOLD:
+        return None
+    first_n = results[:_ABORT_THRESHOLD]
+    if not all(r.state == "provider_error" for r in first_n):
+        return None
+    details = {r.detail for r in first_n}
+    if len(details) != 1:
+        return None
+    return next(iter(details))
 
 
 async def run_one_sample(
@@ -185,6 +213,80 @@ async def _score(
     return await score_judge(sample, response_text, scorer, judge_file, judge_provider)
 
 
+async def _run_samples_with_fail_fast(
+    spec: EvalSpec,
+    samples: list[dict],
+    provider: Provider,
+    judge_provider: Provider | None,
+    judge_file: JudgeFile | None,
+    cache: ResponseCache,
+    semaphore: asyncio.Semaphore,
+) -> tuple[list[SampleResult], str | None]:
+    """Run every sample, but abort early per _uniform_fatal_failure.
+
+    Every sample is submitted as its own task up front (the semaphore, not
+    submission order, governs how many are actually in flight). Results are
+    collected incrementally in COMPLETION order so the abort check can see
+    them as they arrive, but the returned list is reordered back to the
+    samples' original order before returning -- completion order under
+    concurrency is not submission order, and callers (results.jsonl, the
+    manifest) depend on original order.
+
+    On abort: every task still pending (blocked on the semaphore, or mid
+    provider call) is cancelled and awaited to let the cancellation actually
+    land before this returns, then replaced with a single synthesized
+    provider_error result carrying _SKIPPED_DETAIL. run_one_sample's own
+    except clauses only catch Exception, never BaseException, so a
+    CancelledError from task.cancel() propagates out of the task instead of
+    being caught and misreported as an ordinary provider_error -- it is
+    handled here, once, not inside the per-sample pipeline.
+
+    Returns (results_in_original_order, abort_detail_or_None).
+    """
+    task_to_index = {
+        asyncio.create_task(
+            run_one_sample(spec, sample, provider, judge_provider, judge_file, cache, semaphore)
+        ): i
+        for i, sample in enumerate(samples)
+    }
+    ordered: list[SampleResult | None] = [None] * len(samples)
+    completed_in_order: list[SampleResult] = []
+    pending = set(task_to_index)
+    abort_detail: str | None = None
+    abort_checked = False
+
+    while pending:
+        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            result = task.result()
+            ordered[task_to_index[task]] = result
+            completed_in_order.append(result)
+
+        if not abort_checked and len(completed_in_order) >= _ABORT_THRESHOLD:
+            abort_checked = True
+            abort_detail = _uniform_fatal_failure(completed_in_order)
+            if abort_detail is not None:
+                break
+
+    if abort_detail is not None and pending:
+        _log.warning(
+            "run_aborted_after_uniform_fatal_errors",
+            detail=abort_detail,
+            threshold=_ABORT_THRESHOLD,
+            skipped=len(pending),
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in pending:
+            index = task_to_index[task]
+            sample_id = str(samples[index][spec.dataset.id_field])
+            ordered[index] = _error_result(sample_id, _SKIPPED_DETAIL)
+
+    assert all(r is not None for r in ordered)
+    return ordered, abort_detail  # type: ignore[return-value]
+
+
 class LocalRunner(Runner):
     """Runs an eval spec locally: one ResponseCache and one Provider per model,
     constructed once per run, not once per sample.
@@ -214,16 +316,13 @@ class LocalRunner(Runner):
         semaphore = asyncio.Semaphore(spec.run.concurrency)
 
         async with ResponseCache(self._cache_path) as cache:
-            results = await asyncio.gather(
-                *(
-                    run_one_sample(
-                        spec, sample, provider, judge_provider, judge_file, cache, semaphore
-                    )
-                    for sample in samples
-                )
+            results, abort_detail = await _run_samples_with_fail_fast(
+                spec, samples, provider, judge_provider, judge_file, cache, semaphore
             )
 
         wall_time_s = time.monotonic() - start
         judge_model = spec.scorer.model if isinstance(spec.scorer, JudgeScorer) else None
-        summary = summarize(list(results), spec.model, wall_time_s, judge_model=judge_model)
-        return list(results), summary
+        summary = summarize(
+            results, spec.model, wall_time_s, judge_model=judge_model, aborted_reason=abort_detail
+        )
+        return results, summary

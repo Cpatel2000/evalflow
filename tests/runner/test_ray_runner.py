@@ -25,8 +25,9 @@ pytestmark = pytest.mark.ray
 
 ray = pytest.importorskip("ray")
 
+from gradetrail.errors import ProviderError  # noqa: E402
 from gradetrail.providers.base import ProviderResponse  # noqa: E402
-from gradetrail.runner.local import LocalRunner  # noqa: E402
+from gradetrail.runner.local import _SKIPPED_DETAIL, LocalRunner  # noqa: E402
 from gradetrail.runner.ray_runner import RayRunner  # noqa: E402
 from gradetrail.spec import DatasetSpec, EvalSpec, ExactScorer, ModelSpec, RunSpec  # noqa: E402
 
@@ -83,6 +84,19 @@ def crashy_provider_factory(model: ModelSpec, run: RunSpec) -> _UnreachableProvi
     """Raises inside the worker before any sample runs -- simulates the whole
     Ray task (worker) dying, not a single sample's provider call failing."""
     raise RuntimeError("simulated worker crash")
+
+
+class _AlwaysFailsProvider:
+    """Every sample fails with the exact same detail -- the uniform-fatal-
+    error scenario (a missing API key, a no-credits account), not a
+    per-sample failure."""
+
+    async def complete(self, prompt: str, params: object) -> ProviderResponse:
+        raise ProviderError("fake provider: simulated identical fatal failure")
+
+
+def always_fails_provider_factory(model: ModelSpec, run: RunSpec) -> _AlwaysFailsProvider:
+    return _AlwaysFailsProvider()
 
 
 def make_spec(tmp_path: Path, *, samples: list[dict], concurrency: int = 4) -> EvalSpec:
@@ -167,6 +181,51 @@ async def test_batch_failure_converts_to_provider_error_without_crashing_the_run
     assert all(r.detail is not None and "simulated worker crash" in r.detail for r in results)
     assert summary.n_provider_error == 6
     assert summary.n_scored == 0
+
+
+# --- fail-fast on uniform fatal errors (batch granularity) ----------------------------
+
+
+async def test_uniform_fatal_errors_abort_remaining_batches(
+    tmp_path: Path, ray_cluster: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ray.cancel() on the abort path is explicitly best-effort (see NOTES.md:
+    # force=True would risk killing a worker mid cache-write). Skipped results
+    # must come from the driver choosing not to collect an already-dispatched
+    # batch, NOT from cancel() having actually stopped it -- forcing that
+    # cancel() would be a meaningfully riskier change (worker-killing) that
+    # this test should catch if it ever creeps in. Proven directly here by
+    # making ray.cancel a real no-op for this test: if the skip behavior
+    # secretly depended on cancellation succeeding, patching it to do
+    # nothing would change the counts below. It doesn't.
+    monkeypatch.setattr(ray, "cancel", lambda *args, **kwargs: None)
+
+    n_samples = 12
+    rows = [{"id": str(i), "question": f"q{i}", "answer": "42"} for i in range(n_samples)]
+    spec = make_spec(tmp_path, samples=rows, concurrency=4)
+    runner = RayRunner(
+        cache_path=tmp_path / "cache.sqlite",
+        n_workers=3,  # 3 batches of 4 samples each, in original order
+        provider_factory=always_fails_provider_factory,
+    )
+
+    results, summary = await runner.run(spec)
+
+    assert len(results) == n_samples
+    assert all(r.state == "provider_error" for r in results)
+
+    real_failures = [r for r in results if r.detail != _SKIPPED_DETAIL]
+    skipped = [r for r in results if r.detail == _SKIPPED_DETAIL]
+    # Batches 0 and 1 (8 samples) actually ran the real per-sample pipeline
+    # and hit the fatal error for real -- the first 5 of those 8 trip the
+    # predicate once batch 1 lands. Batch 2 (4 samples) is never even
+    # collected: abort granularity is one whole batch, not one sample, since
+    # Ray batches are the smallest unit the driver observes results at.
+    assert len(real_failures) == 8
+    assert len(skipped) == 4
+    assert all(r.detail == _SKIPPED_DETAIL for r in skipped)  # not a cancellation-derived message
+    assert summary.aborted_reason is not None
+    assert summary.n_provider_error == n_samples
 
 
 # --- cache shared across workers ------------------------------------------------------

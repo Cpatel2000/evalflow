@@ -204,6 +204,50 @@ def test_run_green_path_exit_code_is_zero(spec_file: Path, tmp_path: Path) -> No
     assert result.exit_code == 0
 
 
+# --- aborted run: exit 1, prominent line, results still written -----------------------
+
+
+def test_run_aborted_run_exits_1_with_prominent_line(
+    spec_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aborted_summary = dataclasses.replace(
+        FAKE_SUMMARY, aborted_reason="fake provider: simulated identical fatal failure"
+    )
+
+    class _StubRunnerAborted:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def run(self, spec: object) -> tuple[list[SampleResult], RunSummary]:
+            return FAKE_RESULTS, aborted_summary
+
+    monkeypatch.setattr(cli_module, "LocalRunner", _StubRunnerAborted)
+    output_dir = tmp_path / "out"
+    result = runner.invoke(cli_module.app, ["run", str(spec_file), "--output-dir", str(output_dir)])
+
+    assert result.exit_code == 1
+    assert "ABORTED" in result.output
+    assert "simulated identical fatal failure" in result.output
+    # Still written normally, per spec -- an abort is not the same failure
+    # mode as a bad spec/dataset (those exit before ever writing anything).
+    assert (output_dir / "results.jsonl").exists()
+    assert (output_dir / "manifest.json").exists()
+
+
+def test_run_non_aborted_run_with_provider_errors_still_exits_0(
+    spec_file: Path, tmp_path: Path
+) -> None:
+    # aborted_reason defaults to None -- a run that ran to completion, no
+    # matter how many samples failed along the way, must not trip the abort
+    # exit code. (FAKE_SUMMARY/FAKE_RESULTS describe an all-scored run, but
+    # the point here is specifically that aborted_reason, not failure count,
+    # is what drives the exit code.)
+    output_dir = tmp_path / "out"
+    result = runner.invoke(cli_module.app, ["run", str(spec_file), "--output-dir", str(output_dir)])
+    assert result.exit_code == 0
+    assert "ABORTED" not in result.output
+
+
 def test_run_default_output_dir_uses_name_and_identity_hash(
     spec_file: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -17,22 +17,30 @@ backend.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from pathlib import Path
+
+import structlog
 
 from gradetrail.cache import ResponseCache
 from gradetrail.errors import GradetrailError
 from gradetrail.results import RunSummary, SampleResult, summarize
 from gradetrail.runner.base import Runner
 from gradetrail.runner.local import (
+    _ABORT_THRESHOLD,
+    _SKIPPED_DETAIL,
     ProviderFactory,
     _default_provider_factory,
     _error_result,
     _resolve_path,
+    _uniform_fatal_failure,
     run_one_sample,
 )
 from gradetrail.scorers.judge import JudgeFile, load_judge_file
 from gradetrail.spec import EvalSpec, JudgeScorer
+
+_log = structlog.get_logger(__name__)
 
 
 def _require_ray():  # noqa: ANN202 -- return type is the `ray` module, kept untyped to avoid importing it at module level
@@ -158,8 +166,26 @@ class RayRunner(Runner):
         # would defeat per-batch isolation. A fast batch behind a slow one in
         # this list only waits to be *collected* here, not to *run* -- do not
         # "optimize" this back into a single batched ray.get() call.
+        # abort_detail is checked per _uniform_fatal_failure after each batch
+        # lands (granularity is one batch, not one sample -- batches are
+        # already dispatched and running by the time any result exists, so
+        # this can only stop *collecting* further batches, not un-dispatch
+        # ones already running; see NOTES.md).
         results: list[SampleResult] = []
+        abort_detail: str | None = None
         for batch, ref in zip(batches, object_refs, strict=True):
+            if abort_detail is not None:
+                # Best-effort: stops a still-queued ref; does not forcibly
+                # kill one already executing (that would need force=True,
+                # risking a torn cache write mid-batch for no real benefit --
+                # the run is ending either way).
+                with contextlib.suppress(Exception):
+                    ray.cancel(ref)
+                results.extend(
+                    _error_result(str(sample[spec.dataset.id_field]), _SKIPPED_DETAIL)
+                    for sample in batch
+                )
+                continue
             try:
                 batch_results = await asyncio.to_thread(ray.get, ref)
             except Exception as exc:  # noqa: BLE001 -- a whole worker/task died;
@@ -171,8 +197,17 @@ class RayRunner(Runner):
                     for sample in batch
                 ]
             results.extend(batch_results)
+            abort_detail = _uniform_fatal_failure(results)
+            if abort_detail is not None:
+                _log.warning(
+                    "run_aborted_after_uniform_fatal_errors",
+                    detail=abort_detail,
+                    threshold=_ABORT_THRESHOLD,
+                )
 
         wall_time_s = time.monotonic() - start
         judge_model = spec.scorer.model if isinstance(spec.scorer, JudgeScorer) else None
-        summary = summarize(results, spec.model, wall_time_s, judge_model=judge_model)
+        summary = summarize(
+            results, spec.model, wall_time_s, judge_model=judge_model, aborted_reason=abort_detail
+        )
         return results, summary
