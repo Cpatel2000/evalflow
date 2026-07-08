@@ -47,12 +47,14 @@ def run(
         runner = LocalRunner(cache_path=_DEFAULT_CACHE_PATH)
         results, summary = asyncio.run(runner.run(spec))
 
+        served_models = {r.served_model for r in results if r.served_model}
+
         write_jsonl(results, resolved_output_dir / "results.jsonl")
         write_manifest(
             spec,
             summary,
             resolved_output_dir / "manifest.json",
-            served_models=runner.served_models,
+            served_models=served_models,
         )
     except (SpecError, DatasetError) as exc:
         typer.echo(str(exc), err=True)

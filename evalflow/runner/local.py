@@ -78,10 +78,6 @@ def _error_result(sample_id: str, detail: str) -> SampleResult:
 class LocalRunner(Runner):
     """Runs an eval spec locally: one ResponseCache and one Provider per model,
     constructed once per run, not once per sample.
-
-    served_models tracks the set of API-reported model strings seen across all
-    responses (cached or fresh) during the most recent run() call -- used by
-    the CLI to populate the manifest's served_models field.
     """
 
     def __init__(
@@ -92,11 +88,9 @@ class LocalRunner(Runner):
     ) -> None:
         self._cache_path = cache_path
         self._provider_factory = provider_factory
-        self.served_models: set[str] = set()
 
     async def run(self, spec: EvalSpec) -> tuple[list[SampleResult], RunSummary]:
         start = time.monotonic()
-        self.served_models = set()
         samples = spec.load_samples()
 
         judge_file: JudgeFile | None = None
@@ -187,8 +181,6 @@ class LocalRunner(Runner):
                 params_dict,
                 dataclasses.asdict(response),
             )
-        self.served_models.add(response.model)
-
         score_result = await self._score(spec, sample, response.text, judge_provider, judge_file)
 
         return SampleResult(
@@ -201,6 +193,7 @@ class LocalRunner(Runner):
             latency_ms=response.latency_ms,
             cached=cached,
             detail=score_result.detail,
+            served_model=response.model if score_result.state == "scored" else None,
         )
 
     async def _score(

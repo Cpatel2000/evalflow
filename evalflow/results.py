@@ -45,6 +45,7 @@ class SampleResult:
     latency_ms: float | None
     cached: bool
     detail: str | None  # error detail or scorer detail
+    served_model: str | None = None  # API-reported model; None on error states
 
 
 @dataclass(frozen=True)

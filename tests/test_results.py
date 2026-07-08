@@ -29,6 +29,7 @@ def make_scored(
     input_tokens: int = 100,
     output_tokens: int = 50,
     cached: bool = False,
+    served_model: str | None = "fake-model",
 ) -> SampleResult:
     return SampleResult(
         sample_id=sample_id,
@@ -40,6 +41,7 @@ def make_scored(
         latency_ms=123.4,
         cached=cached,
         detail="matched 'x'",
+        served_model=served_model,
     )
 
 
@@ -72,6 +74,16 @@ def test_run_summary_is_frozen_dataclass() -> None:
     summary = summarize([make_scored("1", 1.0)], PRICED_MODEL, wall_time_s=1.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         summary.n_samples = 99  # type: ignore[misc]
+
+
+def test_served_model_defaults_to_none() -> None:
+    result = make_error("1", "provider_error")
+    assert result.served_model is None
+
+
+def test_served_model_can_be_set_on_scored_samples() -> None:
+    result = make_scored("1", 1.0, served_model="claude-sonnet-4-6-20260115")
+    assert result.served_model == "claude-sonnet-4-6-20260115"
 
 
 def test_run_summary_constructs_directly_with_expected_fields() -> None:

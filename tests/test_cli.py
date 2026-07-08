@@ -45,6 +45,7 @@ FAKE_RESULTS = [
         latency_ms=100.0,
         cached=False,
         detail="matched '42'",
+        served_model="claude-sonnet-4-6-20260115",
     )
 ]
 FAKE_SUMMARY = RunSummary(
@@ -65,7 +66,7 @@ class _StubRunner:
     """Stands in for LocalRunner: returns canned results, never calls a provider."""
 
     def __init__(self, **kwargs: object) -> None:
-        self.served_models: set[str] = {"claude-sonnet-4-6-20260115"}
+        pass
 
     async def run(self, spec: object) -> tuple[list[SampleResult], RunSummary]:
         return FAKE_RESULTS, FAKE_SUMMARY
