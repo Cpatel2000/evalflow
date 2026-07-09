@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import os
+import webbrowser
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from gradetrail.results import RunSummary, write_jsonl
 from gradetrail.runner.local import LocalRunner
 from gradetrail.runner.ray_runner import RayRunner
 from gradetrail.spec import compute_identity, load_spec
+from gradetrail.viewer.server import create_server, discover_runs
 
 app = typer.Typer()
 
@@ -101,6 +103,33 @@ def run(
     # scored (partial success is success).
     if summary.aborted_reason is not None or summary.n_scored == 0:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def view(
+    results_root: Path = typer.Argument(
+        Path("results"), help="Directory containing run directories."
+    ),
+    port: int = typer.Option(8600, "--port", help="Port on 127.0.0.1 (0 picks a free one)."),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Don't open a browser."),
+) -> None:
+    """Browse run results in a local web viewer (binds 127.0.0.1 only)."""
+    runs = discover_runs(results_root)
+    if not runs:
+        typer.echo(f"No run directories found under {results_root}.", err=True)
+        raise typer.Exit(code=1)
+
+    server = create_server(results_root, port)
+    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    typer.echo(f"Serving {len(runs)} run(s) at {url} (Ctrl+C to stop)")
+    if not no_browser:
+        webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 def _print_summary(summary: RunSummary) -> None:

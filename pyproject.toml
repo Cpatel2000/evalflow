@@ -1,6 +1,6 @@
 [project]
 name = "gradetrail"
-version = "0.1.2"
+version = "0.2.0"
 description = "A distributed LLM evaluation harness: declarative, cached, reproducible."
 readme = "README.md"
 requires-python = ">=3.11"

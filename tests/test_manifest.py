@@ -261,6 +261,44 @@ def test_write_manifest_total_cost_usd_serialized_as_string(tmp_path: Path) -> N
     assert Decimal(data["total_cost_usd"]) == Decimal("0.0125")
 
 
+# --- dataset path + id field (viewer join, docs/design/viewer.md decision 1) -------
+
+
+def test_write_manifest_dataset_path_is_resolved_absolute(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path)
+    path = tmp_path / "manifest.json"
+    write_manifest(spec, SUMMARY, path)
+    data = json.loads(path.read_text())
+    assert data["dataset_path"] == str(spec.dataset_path().resolve())
+    assert Path(data["dataset_path"]).is_absolute()
+
+
+def test_write_manifest_dataset_id_field_default(tmp_path: Path) -> None:
+    spec = make_spec(tmp_path)
+    path = tmp_path / "manifest.json"
+    write_manifest(spec, SUMMARY, path)
+    data = json.loads(path.read_text())
+    assert data["dataset_id_field"] == "id"
+
+
+def test_write_manifest_dataset_id_field_reflects_spec(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "data.jsonl"
+    dataset_path.write_text(json.dumps({"qid": "1", "question": "2+2?", "answer": "4"}))
+    spec = EvalSpec(
+        name="manifest-test",
+        dataset=DatasetSpec(path=str(dataset_path), id_field="qid"),
+        prompt="{{ question }}",
+        model=ModelSpec(provider="anthropic", name="claude-sonnet-4-6"),
+        scorer=ExactScorer(type="exact", target_field="answer"),
+        run=RunSpec(),
+        base_dir=tmp_path,
+    )
+    path = tmp_path / "manifest.json"
+    write_manifest(spec, SUMMARY, path)
+    data = json.loads(path.read_text())
+    assert data["dataset_id_field"] == "qid"
+
+
 def test_write_manifest_total_cost_usd_is_none_when_unpriced(tmp_path: Path) -> None:
     spec = make_spec(tmp_path)
     unpriced_summary = RunSummary(

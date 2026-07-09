@@ -64,6 +64,10 @@ def write_manifest(
         "identity_hash": compute_identity(spec),
         "name": spec.name,
         "dataset_sha256": _dataset_sha256(spec),
+        # Absolute path + id field so the viewer can join results.jsonl rows
+        # back to dataset rows without loading the spec (viewer.md decision 1).
+        "dataset_path": str(spec.dataset_path().resolve()),
+        "dataset_id_field": spec.dataset.id_field,
         "judge_sha256": _judge_sha256(spec),
         "requested_model": spec.model.name,
         "served_models": sorted(served_models),

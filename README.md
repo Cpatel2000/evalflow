@@ -114,6 +114,22 @@ The same 50 GSM8K samples, the same spec, one field changed (`provider` and `nam
 
 Swapping providers is a two-line spec edit; the cache, scorer, and results format are identical across both runs.
 
+## Results viewer
+
+```
+gradetrail view [RESULTS_ROOT]
+```
+
+Serves a local, zero-dependency web viewer (127.0.0.1 only) over the run directories gradetrail writes. Browse runs with their scores, costs, and reproducibility warnings; audit failures two clicks from landing — open a run, tick "failures", and every zero-score sample is on screen with its question and full response; diff two runs joined on sample id, disagreements only by default. Every view and filter state is a shareable URL.
+
+<!-- TODO: screenshots (docs/images/ not committed yet)
+![run list](docs/images/viewer-runs.png)
+![failure audit](docs/images/viewer-failures.png)
+![two-run diff](docs/images/viewer-diff.png)
+-->
+
+The diff view's first real use separated a scorer fix (3 samples up) from temperature-0 nondeterminism (1 sample down) in a single view — the failure-audit table above, recomputed in one click instead of a hand-inspection evening.
+
 ## Scorers
 
 Three scorer types, one per eval, with worked examples in [examples/](examples/):

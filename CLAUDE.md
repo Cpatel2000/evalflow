@@ -50,3 +50,32 @@ Design docs live in `docs/design/`. Read the relevant one before implementing a 
 2. Public functions have docstrings (one line + args if non-obvious).
 3. NOTES.md updated if a decision was made.
 4. No TODOs left in code without an issue-style note in NOTES.md.
+
+## Architecture additions
+
+- `gradetrail/viewer/server.py` - Run discovery, the dataset join, and the three HTTP endpoints (stdlib http.server only). All filesystem reading and join logic lives here, testable without a browser.
+- `gradetrail/viewer/static/index.html` - The entire frontend: one file, all HTML/CSS/JS inline. No other frontend files may be created.
+- `gradetrail/cli.py` - gains the `view` subcommand, thin wiring only, same rule as `run`.
+
+Design doc: docs/design/viewer.md. Read it before touching any viewer file. The HTTP contract in that doc is the public interface; do not change response shapes without asking me.
+
+## Viewer conventions
+
+- Zero new dependencies. Standard library only for the server. No pip installs, no npm, no build step, no CDN URLs in the HTML (the page must work offline).
+- One HTML file, hard rule. If a change seems to require a second frontend file, stop and ask.
+- Vanilla JS. No frameworks, no TypeScript, no JSX. Small pure functions, DOM building via createElement or template strings. The frontend communicates only through the documented HTTP API in docs/design/viewer.md; that API is the compatibility boundary and its semantics change only by updating the doc first.
+- Every view and filter state must be URL-addressable (deep links are a feature requirement, not a style choice); use hash routing. Fetch a run's data once per view and work from memory; do not refetch per click.
+- The server joins results to the dataset by sample_id via the manifest, and exposes dataset-hash mismatches and parse errors as warnings in the API rather than silently joining or crashing; see the design doc for exact semantics.
+- Frontend style: system font stack, tables not cards, no animation, no emoji, high information density. It should look like a tool, not a product.
+- Escape all user/model-derived text before inserting into the DOM (response_text and dataset fields are untrusted content; use textContent or an escape helper, never innerHTML with raw data).
+- The server binds 127.0.0.1 only, never 0.0.0.0. Validate the run-directory path parameter against the discovered list; reject anything else with 404.
+- Server errors degrade, never 500 on bad data: an unreadable results.jsonl line, a missing dataset, or a malformed manifest becomes a visible per-run or per-sample warning in the JSON, not an exception.
+- Endpoint tests live in tests/viewer/, using tmp-path synthetic run directories. The HTML file itself is not unit-tested; its contract (the endpoints) is.
+
+## Branch workflow (viewer)
+
+- All viewer work happens on the `results-viewer` branch. Never commit viewer work to main.
+- Start every session with `git checkout results-viewer` and confirm with `git branch --show-current` before any commit.
+- Keep the branch current: if main moves (a gradetrail fix ships), rebase or merge main into results-viewer at session start and tell me it happened.
+- Same commit discipline as always: small commits, imperative messages, push to `origin/results-viewer` after each. CI runs on the branch via the pull_request trigger once a PR is open; open a draft PR after milestone 1 so every push gets CI.
+- Merge to main only when v1 (all five milestones) is done, via the PR. The PR includes the version bump to 0.2.0 before merge.

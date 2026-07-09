@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gradetrail</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 1.5rem 2rem;
+         color: #111; background: #fff; }
+  h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+  h1 a { color: inherit; text-decoration: none; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #ddd;
+           font-size: 0.85rem; white-space: nowrap; }
+  th { border-bottom: 2px solid #888; font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.warn { color: #8a5300; }
+  td.err, .err { color: #b00020; }
+  .warn { color: #8a5300; }
+  #status, .meta { font-size: 0.85rem; color: #555; }
+  tr.rowlink { cursor: pointer; }
+  tr.rowlink:hover { background: #f4f4f4; }
+  td.expand { white-space: normal; background: #fafafa; padding: 10px 14px; }
+  .expand h3 { font-size: 0.8rem; margin: 10px 0 2px; color: #555;
+               text-transform: uppercase; letter-spacing: 0.03em; }
+  .expand pre { white-space: pre-wrap; word-break: break-word; margin: 0;
+                font-size: 0.85rem; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+  .controls { display: flex; gap: 1.25rem; align-items: center; margin: 0.75rem 0;
+              font-size: 0.85rem; flex-wrap: wrap; }
+  .controls label { display: flex; gap: 0.35rem; align-items: center; }
+  .controls select, .controls input, .controls button { font-size: 0.85rem; }
+  .controls input[type="search"] { padding: 2px 6px; width: 20rem; }
+  .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
+  @media (max-width: 1100px) { .diff-grid { grid-template-columns: 1fr; } }
+  .diff-grid > div { min-width: 0; }
+  .diff-grid h2 { font-size: 0.9rem; margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1><a href="#/">gradetrail runs</a></h1>
+<p id="status">loading&hellip;</p>
+<div id="view"></div>
+<script>
+"use strict";
+// All model/dataset-derived values go through textContent -- never innerHTML.
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
+}
+
+function td(text, cls) {
+  return el("td", cls, text === null || text === undefined ? "" : text);
+}
+
+function fmtCost(cost) {
+  // One cost format, matching the CLI summary ($0.9834, $0.0000) -- no raw pass-through.
+  return cost === null || cost === undefined ? "unknown" : "$" + Number(cost).toFixed(4);
+}
+
+function fmtScore(score) {
+  return score === null || score === undefined ? "n/a" : Number(score).toFixed(4);
+}
+
+function setStatus(text, isError) {
+  const status = document.getElementById("status");
+  status.textContent = text;
+  status.className = isError ? "err" : "";
+}
+
+async function fetchJSON(path) {
+  const resp = await fetch(path);
+  if (!resp.ok) throw new Error(path + " -> HTTP " + resp.status);
+  return resp.json();
+}
+
+// Element.append() returns undefined (unlike appendChild) -- never chain off it.
+function tableWithHead(cols, numCols) {
+  const table = el("table");
+  const head = el("tr");
+  for (const col of cols) head.append(el("th", numCols.includes(col) ? "num" : "", col));
+  const thead = el("thead");
+  thead.append(head);
+  table.append(thead);
+  return table;
+}
+
+// --- run list view ------------------------------------------------------------------
+
+const PRE_02_NOTE = "dataset unverifiable: run predates dataset-path tracking; " +
+  "re-running the spec regenerates the manifest, usually near-free from cache";
+
+function runNotesList(run) {
+  const out = [];  // {short, full}: short for tight table cells, full for headers/hover
+  if (run.dataset_matches === false) {
+    out.push({ short: "dataset changed since this run",
+               full: "dataset changed since this run" });
+  }
+  if (run.dataset_matches === null) {
+    out.push({ short: "dataset unverifiable (pre-0.2 run)", full: PRE_02_NOTE });
+  }
+  if (run.parse_errors > 0) {
+    const n = run.parse_errors + " unreadable result line(s)";
+    out.push({ short: n, full: n });
+  }
+  return out;
+}
+
+function runNotes(run) {
+  return runNotesList(run).map((n) => n.short).join("; ");
+}
+
+function runNotesFull(run) {
+  return runNotesList(run).map((n) => n.full).join("; ");
+}
+
+function listRow(run, selection) {
+  const tr = el("tr", "rowlink");
+  tr.addEventListener("click", () => { location.hash = "#/run/" + encodeURIComponent(run.dir); });
+
+  const box = el("input");
+  box.type = "checkbox";
+  box.addEventListener("click", (e) => e.stopPropagation());  // don't navigate
+  box.addEventListener("change", () => selection.toggle(run.dir, box.checked));
+  const boxCell = td("");
+  boxCell.addEventListener("click", (e) => e.stopPropagation());
+  boxCell.append(box);
+  tr.append(boxCell);
+
+  if (run.error) {  // key omitted when healthy, per the HTTP contract
+    const msg = td("manifest error: " + run.error, "err");
+    msg.colSpan = 10;
+    tr.append(td(run.dir), msg);
+    return tr;
+  }
+  const c = run.counts || {};
+  const errors = (c.provider_error || 0) + (c.judge_error || 0);
+  tr.append(
+    td(run.name),
+    td((run.identity_hash || "").slice(0, 8)),
+    td(run.model),
+    td((run.created_at || "").slice(0, 19).replace("T", " ")),
+    td(run.n_samples, "num"),
+    td(c.scored, "num"),
+    td(errors, "num"),
+    td(fmtScore(run.mean_score), "num"),
+    td(fmtCost(run.total_cost_usd), "num"),
+    td(run.wall_time_s === null ? "" : Number(run.wall_time_s).toFixed(1), "num"),
+  );
+  const notesCell = td(runNotes(run), runNotes(run) ? "warn" : "");
+  notesCell.title = runNotesFull(run);  // full actionable text on hover; column stays tight
+  tr.append(notesCell);
+  return tr;
+}
+
+async function showList(view) {
+  const runs = await fetchJSON("/api/runs");
+
+  // Checking exactly two runs enables the Diff button; A/B order = selection order.
+  const bar = el("div", "controls");
+  const diffBtn = el("button", "", "Diff selected");
+  diffBtn.disabled = true;
+  const picked = [];  // dirs in the order they were checked
+  const selection = {
+    toggle(dir, on) {
+      const i = picked.indexOf(dir);
+      if (on && i === -1) picked.push(dir);
+      if (!on && i !== -1) picked.splice(i, 1);
+      diffBtn.disabled = picked.length !== 2;
+      diffBtn.textContent = picked.length === 2
+        ? "Diff " + picked[0] + " vs " + picked[1]
+        : "Diff selected (pick exactly 2)";
+    },
+  };
+  selection.toggle(null, false);  // set the initial label
+  diffBtn.addEventListener("click", () => {
+    location.hash = "#/diff/" + encodeURIComponent(picked[0]) +
+                    "/" + encodeURIComponent(picked[1]);
+  });
+  bar.append(diffBtn);
+
+  const table = tableWithHead(
+    ["diff", "name", "hash", "model", "created", "samples", "scored", "errors", "mean", "cost",
+     "wall s", "notes"],
+    ["samples", "scored", "errors", "mean", "cost", "wall s"]);
+  const tbody = table.appendChild(el("tbody"));
+  for (const run of runs) tbody.append(listRow(run, selection));
+  view.append(bar);
+  view.append(table);
+  setStatus(runs.length + " run(s)");
+}
+
+// --- filter / sort / search state (all of it lives in the URL hash) -------------------
+
+function parseFilters(hash) {
+  const i = hash.indexOf("?");
+  const p = new URLSearchParams(i === -1 ? "" : hash.slice(i + 1));
+  return {
+    state: p.get("state") || "all",
+    zero: p.get("zero") === "1",
+    sort: p.get("sort") || "file",
+    q: p.get("q") || "",
+  };
+}
+
+function filtersToHash(dir, f) {
+  const p = new URLSearchParams();
+  if (f.state !== "all") p.set("state", f.state);
+  if (f.zero) p.set("zero", "1");
+  if (f.sort !== "file") p.set("sort", f.sort);
+  if (f.q) p.set("q", f.q);
+  const qs = p.toString();
+  return "#/run/" + encodeURIComponent(dir) + (qs ? "?" + qs : "");
+}
+
+function sampleMatches(s, f) {
+  if (f.state !== "all" && s.state !== f.state) return false;
+  if (f.zero && !(s.state === "scored" && s.score === 0)) return false;
+  if (f.q) {
+    const q = f.q.toLowerCase();
+    const hay = [s.response_text, s.detail];
+    if (s.sample) {
+      for (const v of Object.values(s.sample)) {
+        hay.push(typeof v === "string" ? v : JSON.stringify(v));
+      }
+    }
+    return hay.some((v) => v !== null && v !== undefined &&
+                           String(v).toLowerCase().includes(q));
+  }
+  return true;
+}
+
+function compareIds(a, b) {
+  const na = Number(a), nb = Number(b);
+  if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+  return String(a).localeCompare(String(b));
+}
+
+function sortedSamples(samples, key) {
+  if (key === "id") return [...samples].sort((a, b) => compareIds(a.sample_id, b.sample_id));
+  if (key === "score") {
+    // Ascending, zeros first (the audit reads top-down); null scores (error states) last.
+    return [...samples].sort((a, b) => (a.score ?? Infinity) - (b.score ?? Infinity));
+  }
+  return samples;  // "file": results.jsonl order, as served
+}
+
+// --- single run view ----------------------------------------------------------------
+
+const dataCache = new Map();  // dir -> detail payload; fetch once, work from memory
+
+async function fetchRun(dir) {
+  if (!dataCache.has(dir)) {
+    dataCache.set(dir, await fetchJSON("/api/runs/" + encodeURIComponent(dir)));
+  }
+  return dataCache.get(dir);
+}
+
+function transcript(s) {
+  const box = el("div", "expand-body");
+  box.append(el("h3", "", "dataset row"));
+  if (s.sample === null || s.sample === undefined) {
+    box.append(el("p", "warn", "dataset row unavailable for this sample (see run warnings)"));
+  } else {
+    for (const [key, value] of Object.entries(s.sample)) {
+      box.append(el("h3", "", key));
+      box.append(el("pre", "", typeof value === "string" ? value : JSON.stringify(value)));
+    }
+  }
+  box.append(el("h3", "", "response_text"));
+  box.append(el("pre", "", s.response_text === null ? "(none)" : s.response_text));
+  if (s.detail !== null && s.detail !== undefined) {
+    box.append(el("h3", "", "detail"));
+    box.append(el("pre", "", s.detail));
+  }
+  box.append(el("h3", "", "tokens"));
+  const tok = [
+    "input " + (s.input_tokens ?? "n/a"), "output " + (s.output_tokens ?? "n/a"),
+  ];
+  if (s.judge_input_tokens !== null && s.judge_input_tokens !== undefined) {
+    tok.push("judge input " + s.judge_input_tokens, "judge output " + s.judge_output_tokens);
+  }
+  if (s.latency_ms !== null && s.latency_ms !== undefined) {
+    tok.push(Number(s.latency_ms).toFixed(0) + " ms");
+  }
+  if (s.served_model) tok.push("served by " + s.served_model);
+  box.append(el("pre", "", tok.join("  |  ")));
+  return box;
+}
+
+// accordion: in manual browsing, opening a transcript collapses the previous one.
+// In audit mode (zero=1) every visible transcript starts expanded and rows toggle
+// independently -- the whole point is seeing all failures at once.
+function sampleRow(s, audit, accordion) {
+  const tr = el("tr", "rowlink");
+  const zero = s.state === "scored" && s.score === 0;
+  tr.append(
+    td(s.sample_id),
+    td(s.state, s.state === "scored" ? "" : "err"),
+    td(fmtScore(s.score), zero ? "num err" : "num"),
+    // Explicit yes/no; n/a for provider_error, where no primary response was
+    // ever produced and cache status is meaningless.
+    td(s.state === "provider_error" ? "n/a" : (s.cached ? "yes" : "no"), "num"),
+    td(s.input_tokens, "num"),
+    td(s.output_tokens, "num")
+  );
+  let panel = null;
+  const collapse = () => { if (panel) { panel.remove(); panel = null; } };
+  const expand = () => {
+    if (panel) return;
+    panel = el("tr");
+    const cell = td("", "expand");
+    cell.colSpan = 6;
+    cell.append(transcript(s));
+    panel.append(cell);
+    tr.after(panel);  // requires tr to be in the DOM already
+  };
+  tr.addEventListener("click", () => {
+    if (panel) {
+      collapse();
+      if (accordion.collapseOpen === collapse) accordion.collapseOpen = null;
+      return;
+    }
+    if (!audit && accordion.collapseOpen) accordion.collapseOpen();
+    expand();
+    accordion.collapseOpen = collapse;
+  });
+  return { tr, expand };
+}
+
+function renderSamples(tbody, samples, f) {
+  tbody.replaceChildren();
+  const audit = f.zero;
+  const accordion = { collapseOpen: null };
+  const rows = [];
+  for (const s of sortedSamples(samples.filter((x) => sampleMatches(x, f)), f.sort)) {
+    const row = sampleRow(s, audit, accordion);
+    tbody.append(row.tr);
+    rows.push(row);
+  }
+  if (audit) for (const row of rows) row.expand();  // after insertion: tr.after needs a parent
+  return rows.length;
+}
+
+function labeled(text, control) {
+  const wrap = el("label", "", text + " ");
+  wrap.append(control);
+  return wrap;
+}
+
+function controlsBar(f, apply) {
+  const bar = el("div", "controls");
+
+  const stateSel = el("select");
+  for (const v of ["all", "scored", "provider_error", "judge_error"]) {
+    const opt = el("option", "", v);
+    opt.value = v;
+    opt.selected = v === f.state;
+    stateSel.append(opt);
+  }
+  stateSel.addEventListener("change", () => { f.state = stateSel.value; apply(); });
+
+  const zeroBox = el("input");
+  zeroBox.type = "checkbox";
+  zeroBox.checked = f.zero;
+  zeroBox.addEventListener("change", () => { f.zero = zeroBox.checked; apply(); });
+  const zeroLabel = el("label");
+  zeroLabel.append(zeroBox, document.createTextNode(" failures (score = 0)"));
+
+  const sortSel = el("select");
+  for (const v of ["file", "id", "score"]) {
+    const opt = el("option", "", v);
+    opt.value = v;
+    opt.selected = v === f.sort;
+    sortSel.append(opt);
+  }
+  sortSel.addEventListener("change", () => { f.sort = sortSel.value; apply(); });
+
+  const search = el("input");
+  search.type = "search";
+  search.placeholder = "search response, detail, dataset fields";
+  search.value = f.q;
+  search.addEventListener("input", () => { f.q = search.value; apply(); });
+
+  bar.append(labeled("state", stateSel), zeroLabel, labeled("sort", sortSel), search);
+  return bar;
+}
+
+function runHeader(data) {
+  const wrap = el("div");
+  const m = data.manifest;
+  if (data.error) wrap.append(el("p", "err", "manifest error: " + data.error));
+  if (m) {
+    wrap.append(el("h1", "", m.name + "  (" + (m.identity_hash || "").slice(0, 8) + ")"));
+    const c = [
+      "model " + m.requested_model,
+      "samples " + m.n_samples + " (scored=" + m.n_scored + ", provider_error=" +
+        m.n_provider_error + ", judge_error=" + m.n_judge_error + ")",
+      "mean " + fmtScore(m.mean_score),
+      "cost " + fmtCost(m.total_cost_usd),
+      "cache hits " + m.cache_hits + "/" + m.n_samples,
+      "wall " + Number(m.wall_time_s).toFixed(1) + "s",
+      (m.created_at || "").slice(0, 19).replace("T", " "),
+    ];
+    wrap.append(el("p", "meta", c.join("  |  ")));
+  } else {
+    wrap.append(el("h1", "", data.dir));
+  }
+  const warnings = runNotesFull(data);  // headers have room for the actionable text
+  if (warnings) wrap.append(el("p", "warn", warnings));
+  return wrap;
+}
+
+async function showRun(view, dir, f) {
+  const data = await fetchRun(dir);
+  view.append(runHeader(data));
+  const table = tableWithHead(
+    ["id", "state", "score", "cached", "tok in", "tok out"],
+    ["score", "cached", "tok in", "tok out"]);
+  const tbody = table.appendChild(el("tbody"));
+
+  // Filter changes rewrite the URL via replaceState: the link stays shareable
+  // and reload-safe without a history entry per keystroke, and without a
+  // hashchange rebuild (which would drop focus from the search box).
+  // Real navigation (list <-> run, back/forward) still flows through hashchange.
+  const apply = () => {
+    history.replaceState(null, "", filtersToHash(dir, f));
+    const shown = renderSamples(tbody, data.samples, f);
+    setStatus(shown + " of " + data.samples.length + " sample(s) shown in " + data.dir);
+  };
+  view.append(controlsBar(f, apply));
+  view.append(table);
+  apply();
+}
+
+// --- two-run diff view ----------------------------------------------------------------
+
+// Pure: rows for the union of sample_ids (numeric-aware order). A sample
+// missing on one side is a disagreement -- shown, never dropped.
+function computeDiff(samplesA, samplesB) {
+  const byA = new Map(samplesA.map((s) => [s.sample_id, s]));
+  const byB = new Map(samplesB.map((s) => [s.sample_id, s]));
+  const ids = [...new Set([...byA.keys(), ...byB.keys()])].sort(compareIds);
+  return ids.map((id) => {
+    const a = byA.get(id) ?? null;
+    const b = byB.get(id) ?? null;
+    const disagree = !a || !b || a.state !== b.state ||
+                     (a.score ?? null) !== (b.score ?? null);
+    return { id, a, b, disagree };
+  });
+}
+
+function diffChangeText(row) {
+  if (!row.a) return "missing in A";
+  if (!row.b) return "missing in B";
+  const parts = [];
+  if (row.a.state !== row.b.state) parts.push(row.a.state + " → " + row.b.state);
+  if ((row.a.score ?? null) !== (row.b.score ?? null)) {
+    parts.push(fmtScore(row.a.score) + " → " + fmtScore(row.b.score));
+  }
+  return parts.join(", ");
+}
+
+// Side-by-side transcripts (stacking under 1100px): comparison is the entire
+// point of this view, and pre-wrapped response_text reads fine at half width.
+function diffPanel(row, dirA, dirB) {
+  const grid = el("div", "diff-grid");
+  for (const [dir, s] of [[dirA, row.a], [dirB, row.b]]) {
+    const side = el("div");
+    side.append(el("h2", "", dir));
+    if (s) side.append(transcript(s));
+    else side.append(el("p", "warn", "sample " + row.id + " is missing from this run"));
+    grid.append(side);
+  }
+  return grid;
+}
+
+function diffRow(row, dirA, dirB, accordion) {
+  const tr = el("tr", "rowlink");
+  const cells = [td(row.id)];
+  for (const s of [row.a, row.b]) {
+    cells.push(
+      td(s ? s.state : "missing", s && s.state === "scored" ? "" : "err"),
+      td(s ? fmtScore(s.score) : "—",
+         s && s.state === "scored" && s.score === 0 ? "num err" : "num")
+    );
+  }
+  cells.push(td(diffChangeText(row), row.disagree ? "warn" : ""));
+  tr.append(...cells);
+
+  let panel = null;
+  const collapse = () => { if (panel) { panel.remove(); panel = null; } };
+  tr.addEventListener("click", () => {
+    if (panel) {
+      collapse();
+      if (accordion.collapseOpen === collapse) accordion.collapseOpen = null;
+      return;
+    }
+    if (accordion.collapseOpen) accordion.collapseOpen();
+    panel = el("tr");
+    const cell = td("", "expand");
+    cell.colSpan = 6;
+    cell.append(diffPanel(row, dirA, dirB));
+    panel.append(cell);
+    tr.after(panel);
+    accordion.collapseOpen = collapse;
+  });
+  return tr;
+}
+
+function diffHeader(dirA, dataA, dirB, dataB) {
+  const wrap = el("div");
+  wrap.append(el("h1", "", "diff: " + dirA + " vs " + dirB));
+  const line = (dir, data) => {
+    const m = data.manifest;
+    return m ? m.name + " (" + (m.identity_hash || "").slice(0, 8) + ", mean " +
+               fmtScore(m.mean_score) + ")"
+             : dir + " (manifest error)";
+  };
+  wrap.append(el("p", "meta", "A: " + line(dirA, dataA) + "   |   B: " + line(dirB, dataB)));
+  const hashA = dataA.manifest && dataA.manifest.identity_hash;
+  const hashB = dataB.manifest && dataB.manifest.identity_hash;
+  wrap.append(hashA && hashA === hashB
+    ? el("p", "meta", "identity hashes match (same spec)")
+    : el("p", "warn", "identity hashes differ"));
+  for (const [dir, data] of [[dirA, dataA], [dirB, dataB]]) {
+    const warnings = runNotesFull(data);
+    if (data.error) wrap.append(el("p", "err", dir + ": manifest error: " + data.error));
+    if (warnings) wrap.append(el("p", "warn", dir + ": " + warnings));
+  }
+  return wrap;
+}
+
+async function showDiff(view, dirA, dirB, f) {
+  const [dataA, dataB] = [await fetchRun(dirA), await fetchRun(dirB)];
+  view.append(diffHeader(dirA, dataA, dirB, dataB));
+
+  const rows = computeDiff(dataA.samples, dataB.samples);
+  const nDisagree = rows.filter((r) => r.disagree).length;
+
+  const bar = el("div", "controls");
+  const allBox = el("input");
+  allBox.type = "checkbox";
+  allBox.checked = f.all;
+  const allLabel = el("label");
+  allLabel.append(allBox, document.createTextNode(" show all samples (not just disagreements)"));
+  bar.append(allLabel);
+  view.append(bar);
+
+  const table = tableWithHead(
+    ["id", "state A", "score A", "state B", "score B", "change"],
+    ["score A", "score B"]);
+  const tbody = table.appendChild(el("tbody"));
+  view.append(table);
+
+  const apply = () => {
+    const p = new URLSearchParams();
+    if (f.all) p.set("all", "1");
+    const qs = p.toString();
+    history.replaceState(null, "", "#/diff/" + encodeURIComponent(dirA) + "/" +
+                         encodeURIComponent(dirB) + (qs ? "?" + qs : ""));
+    tbody.replaceChildren();
+    const accordion = { collapseOpen: null };
+    const visible = f.all ? rows : rows.filter((r) => r.disagree);
+    for (const row of visible) tbody.append(diffRow(row, dirA, dirB, accordion));
+    setStatus(visible.length + " of " + rows.length + " sample(s) shown — " +
+              (rows.length - nDisagree) + " agree, " + nDisagree + " disagree");
+  };
+  allBox.addEventListener("change", () => { f.all = allBox.checked; apply(); });
+  apply();
+}
+
+// --- hash router ----------------------------------------------------------------------
+
+async function route() {
+  const view = document.getElementById("view");
+  view.replaceChildren();
+  setStatus("loading…");
+  const run = location.hash.match(/^#\/run\/([^/?]+)/);
+  const diff = location.hash.match(/^#\/diff\/([^/?]+)\/([^/?]+)/);
+  try {
+    if (diff) {
+      const i = location.hash.indexOf("?");
+      const p = new URLSearchParams(i === -1 ? "" : location.hash.slice(i + 1));
+      await showDiff(view, decodeURIComponent(diff[1]), decodeURIComponent(diff[2]),
+                     { all: p.get("all") === "1" });
+    } else if (run) {
+      await showRun(view, decodeURIComponent(run[1]), parseFilters(location.hash));
+    } else {
+      await showList(view);
+    }
+  } catch (e) {
+    setStatus(String(e), true);
+  }
+}
+
+function boot() {
+  // Degrade, don't crash (same convention as the server): a missing root
+  // element renders a visible message instead of an unhandled TypeError.
+  if (!document.getElementById("view") || !document.getElementById("status")) {
+    const msg = document.createElement("p");
+    msg.textContent = "viewer failed to boot: required page element missing (#view / #status)";
+    msg.style.color = "#b00020";
+    document.body.prepend(msg);
+    return;
+  }
+  window.addEventListener("hashchange", route);
+  route();
+}
+
+boot();
+</script>
+</body>
+</html>
