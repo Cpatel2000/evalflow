@@ -8,42 +8,68 @@
   body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 1.5rem 2rem;
          color: #111; background: #fff; }
   h1 { font-size: 1.2rem; margin: 0 0 1rem; }
+  h1 a { color: inherit; text-decoration: none; }
   table { border-collapse: collapse; width: 100%; }
   th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #ddd;
            font-size: 0.85rem; white-space: nowrap; }
   th { border-bottom: 2px solid #888; font-weight: 600; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   td.warn { color: #8a5300; }
-  td.err { color: #b00020; }
-  #status { font-size: 0.85rem; color: #555; }
+  td.err, .err { color: #b00020; }
+  .warn { color: #8a5300; }
+  #status, .meta { font-size: 0.85rem; color: #555; }
+  tr.rowlink { cursor: pointer; }
+  tr.rowlink:hover { background: #f4f4f4; }
+  td.expand { white-space: normal; background: #fafafa; padding: 10px 14px; }
+  .expand h3 { font-size: 0.8rem; margin: 10px 0 2px; color: #555;
+               text-transform: uppercase; letter-spacing: 0.03em; }
+  .expand pre { white-space: pre-wrap; word-break: break-word; margin: 0;
+                font-size: 0.85rem; font-family: ui-monospace, "SF Mono", Consolas, monospace; }
 </style>
 </head>
 <body>
-<h1>gradetrail runs</h1>
+<h1><a href="#/">gradetrail runs</a></h1>
 <p id="status">loading&hellip;</p>
-<table id="runs" hidden>
-  <thead>
-    <tr>
-      <th>name</th><th>hash</th><th>model</th><th>created</th>
-      <th class="num">samples</th><th class="num">scored</th>
-      <th class="num">errors</th><th class="num">mean</th>
-      <th class="num">cost&nbsp;$</th><th class="num">wall&nbsp;s</th>
-      <th>notes</th>
-    </tr>
-  </thead>
-  <tbody></tbody>
-</table>
+<div id="view"></div>
 <script>
 "use strict";
-// All model/dataset-derived values go through td()'s textContent -- never innerHTML.
-function td(text, cls) {
-  const el = document.createElement("td");
-  el.textContent = text === null || text === undefined ? "" : String(text);
-  if (cls) el.className = cls;
-  return el;
+// All model/dataset-derived values go through textContent -- never innerHTML.
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = String(text);
+  return node;
 }
 
-function notes(run) {
+function td(text, cls) {
+  return el("td", cls, text === null || text === undefined ? "" : text);
+}
+
+function fmtCost(cost) {
+  // One cost format, matching the CLI summary ($0.9834, $0.0000) -- no raw pass-through.
+  return cost === null || cost === undefined ? "unknown" : "$" + Number(cost).toFixed(4);
+}
+
+function fmtScore(score) {
+  return score === null || score === undefined ? "n/a" : Number(score).toFixed(4);
+}
+
+function setStatus(text, isError) {
+  const status = document.getElementById("status");
+  status.textContent = text;
+  status.className = isError ? "err" : "";
+}
+
+async function fetchJSON(path) {
+  const resp = await fetch(path);
+  if (!resp.ok) throw new Error(path + " -> HTTP " + resp.status);
+  return resp.json();
+}
+
+// --- run list view ------------------------------------------------------------------
+
+function runNotes(run) {
   const out = [];
   if (run.dataset_matches === false) out.push("dataset changed since this run");
   if (run.dataset_matches === null) out.push("dataset unverifiable (pre-0.2 run?)");
@@ -51,8 +77,9 @@ function notes(run) {
   return out.join("; ");
 }
 
-function renderRow(run) {
-  const tr = document.createElement("tr");
+function listRow(run) {
+  const tr = el("tr", "rowlink");
+  tr.addEventListener("click", () => { location.hash = "#/run/" + encodeURIComponent(run.dir); });
   if (run.error) {  // key omitted when healthy, per the HTTP contract
     const msg = td("manifest error: " + run.error, "err");
     msg.colSpan = 10;
@@ -61,9 +88,6 @@ function renderRow(run) {
   }
   const c = run.counts || {};
   const errors = (c.provider_error || 0) + (c.judge_error || 0);
-  const mean = run.mean_score === null ? "n/a" : Number(run.mean_score).toFixed(4);
-  // One cost format, matching the CLI summary ($0.9834, $0.0000) -- no raw pass-through.
-  const cost = run.total_cost_usd === null ? "unknown" : "$" + Number(run.total_cost_usd).toFixed(4);
   tr.append(
     td(run.name),
     td((run.identity_hash || "").slice(0, 8)),
@@ -72,32 +96,145 @@ function renderRow(run) {
     td(run.n_samples, "num"),
     td(c.scored, "num"),
     td(errors, "num"),
-    td(mean, "num"),
-    td(cost, "num"),
+    td(fmtScore(run.mean_score), "num"),
+    td(fmtCost(run.total_cost_usd), "num"),
     td(run.wall_time_s === null ? "" : Number(run.wall_time_s).toFixed(1), "num"),
-    td(notes(run), notes(run) ? "warn" : "")
+    td(runNotes(run), runNotes(run) ? "warn" : "")
   );
   return tr;
 }
 
-async function main() {
-  const status = document.getElementById("status");
-  let runs;
-  try {
-    const resp = await fetch("/api/runs");
-    runs = await resp.json();
-  } catch (e) {
-    status.textContent = "failed to load /api/runs: " + e;
-    return;
+async function showList(view) {
+  const runs = await fetchJSON("/api/runs");
+  const table = el("table");
+  const head = el("tr");
+  for (const col of ["name", "hash", "model", "created", "samples", "scored", "errors",
+                     "mean", "cost", "wall s", "notes"]) {
+    head.append(el("th", ["samples", "scored", "errors", "mean", "cost", "wall s"]
+                         .includes(col) ? "num" : "", col));
   }
-  const table = document.getElementById("runs");
-  const tbody = table.querySelector("tbody");
-  for (const run of runs) tbody.append(renderRow(run));
-  status.textContent = runs.length + " run(s)";
-  table.hidden = false;
+  table.append(el("thead")).append(head);
+  const tbody = table.appendChild(el("tbody"));
+  for (const run of runs) tbody.append(listRow(run));
+  view.append(table);
+  setStatus(runs.length + " run(s)");
 }
 
-main();
+// --- single run view ----------------------------------------------------------------
+
+function transcript(s) {
+  const box = el("div", "expand-body");
+  box.append(el("h3", "", "dataset row"));
+  if (s.sample === null || s.sample === undefined) {
+    box.append(el("p", "warn", "dataset row unavailable for this sample (see run warnings)"));
+  } else {
+    for (const [key, value] of Object.entries(s.sample)) {
+      box.append(el("h3", "", key));
+      box.append(el("pre", "", typeof value === "string" ? value : JSON.stringify(value)));
+    }
+  }
+  box.append(el("h3", "", "response_text"));
+  box.append(el("pre", "", s.response_text === null ? "(none)" : s.response_text));
+  if (s.detail !== null && s.detail !== undefined) {
+    box.append(el("h3", "", "detail"));
+    box.append(el("pre", "", s.detail));
+  }
+  box.append(el("h3", "", "tokens"));
+  const tok = [
+    "input " + (s.input_tokens ?? "n/a"), "output " + (s.output_tokens ?? "n/a"),
+  ];
+  if (s.judge_input_tokens !== null && s.judge_input_tokens !== undefined) {
+    tok.push("judge input " + s.judge_input_tokens, "judge output " + s.judge_output_tokens);
+  }
+  if (s.latency_ms !== null && s.latency_ms !== undefined) {
+    tok.push(Number(s.latency_ms).toFixed(0) + " ms");
+  }
+  if (s.served_model) tok.push("served by " + s.served_model);
+  box.append(el("pre", "", tok.join("  |  ")));
+  return box;
+}
+
+function sampleRow(s, tbody) {
+  const tr = el("tr", "rowlink");
+  tr.append(
+    td(s.sample_id),
+    td(s.state, s.state === "scored" ? "" : "err"),
+    td(fmtScore(s.score), "num"),
+    td(s.cached ? "yes" : "", "num"),
+    td(s.input_tokens, "num"),
+    td(s.output_tokens, "num")
+  );
+  let expanded = null;
+  tr.addEventListener("click", () => {
+    if (expanded) { expanded.remove(); expanded = null; return; }
+    expanded = el("tr");
+    const cell = td("", "expand");
+    cell.colSpan = 6;
+    cell.append(transcript(s));
+    expanded.append(cell);
+    tr.after(expanded);
+  });
+  return tr;
+}
+
+function runHeader(data) {
+  const wrap = el("div");
+  const m = data.manifest;
+  if (data.error) wrap.append(el("p", "err", "manifest error: " + data.error));
+  if (m) {
+    wrap.append(el("h1", "", m.name + "  (" + (m.identity_hash || "").slice(0, 8) + ")"));
+    const c = [
+      "model " + m.requested_model,
+      "samples " + m.n_samples + " (scored=" + m.n_scored + ", provider_error=" +
+        m.n_provider_error + ", judge_error=" + m.n_judge_error + ")",
+      "mean " + fmtScore(m.mean_score),
+      "cost " + fmtCost(m.total_cost_usd),
+      "cache hits " + m.cache_hits + "/" + m.n_samples,
+      "wall " + Number(m.wall_time_s).toFixed(1) + "s",
+      (m.created_at || "").slice(0, 19).replace("T", " "),
+    ];
+    wrap.append(el("p", "meta", c.join("  |  ")));
+  } else {
+    wrap.append(el("h1", "", data.dir));
+  }
+  const warnings = runNotes(data);
+  if (warnings) wrap.append(el("p", "warn", warnings));
+  return wrap;
+}
+
+async function showRun(view, dir) {
+  // Fetched once per view; expansion works from memory (no refetch per click).
+  const data = await fetchJSON("/api/runs/" + encodeURIComponent(dir));
+  view.append(runHeader(data));
+  const table = el("table");
+  const head = el("tr");
+  for (const col of ["id", "state", "score", "cached", "tok in", "tok out"]) {
+    head.append(el("th", col === "id" || col === "state" ? "" : "num", col));
+  }
+  table.append(el("thead")).append(head);
+  const tbody = table.appendChild(el("tbody"));
+  for (const s of data.samples) tbody.append(sampleRow(s, tbody));
+  view.append(table);
+  setStatus(data.samples.length + " sample(s) in " + data.dir);
+}
+
+// --- hash router ----------------------------------------------------------------------
+
+async function route() {
+  const view = document.getElementById("view");
+  view.replaceChildren();
+  setStatus("loading…");
+  const match = location.hash.match(/^#\/run\/([^/?]+)/);
+  try {
+    if (match) await showRun(view, decodeURIComponent(match[1]));
+    else await showList(view);
+  } catch (e) {
+    setStatus(String(e), true);
+  }
+}
+
+window.addEventListener("hashchange", route);
+route();
 </script>
 </body>
 </html>
