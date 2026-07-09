@@ -375,6 +375,120 @@ def test_api_runs_malformed_manifest_surfaces_error_not_absence(tmp_path: Path, 
     assert "error" not in by_dir["good-run"]
 
 
+# --- GET /api/runs/{dir} -----------------------------------------------------------------
+
+
+def test_api_run_detail_shape_and_join(clean_run: Path, serve) -> None:
+    status, body = get_json(serve(clean_run), "/api/runs/qa-abc12345")
+    assert status == 200
+    assert body["dir"] == "qa-abc12345"
+    # Manifest verbatim: exactly what's on disk, not a reshaped copy.
+    on_disk = json.loads((clean_run / "qa-abc12345" / "manifest.json").read_text())
+    assert body["manifest"] == on_disk
+    assert body["dataset_matches"] is True
+    assert body["parse_errors"] == 0
+    assert "error" not in body
+
+    samples = body["samples"]
+    assert [s["sample_id"] for s in samples] == ["1", "2"]  # results.jsonl order
+    first = samples[0]
+    assert first["state"] == "scored"
+    assert first["score"] == 1.0
+    assert first["response_text"] == "Answer: 1"
+    assert first["detail"] is None
+    assert first["input_tokens"] == 10
+    assert first["output_tokens"] == 20
+    assert first["judge_input_tokens"] is None
+    assert first["judge_output_tokens"] is None
+    assert first["cached"] is False
+    # The results.jsonl row passes through verbatim -- fields beyond the doc's
+    # example (latency_ms, served_model) are not stripped.
+    assert first["latency_ms"] == 100.0
+    assert first["served_model"] == "claude-sonnet-4-6"
+    assert first["sample"] == {"id": "1", "question": "2+2?", "answer": "4"}
+    assert samples[1]["sample"] == {"id": "2", "question": "3+3?", "answer": "6"}
+
+
+def test_api_run_detail_sample_null_when_id_missing_from_dataset(tmp_path: Path, serve) -> None:
+    dataset = tmp_path / "data.jsonl"
+    make_dataset(dataset, [{"id": "1", "question": "q1"}])
+    root = tmp_path / "results"
+    make_run(
+        root,
+        "run-a",
+        manifest=make_manifest(name="a", dataset_path=dataset),
+        results_lines=[sample_line("1"), sample_line("ghost-id")],
+    )
+    _, body = get_json(serve(root), "/api/runs/run-a")
+    by_id = {s["sample_id"]: s for s in body["samples"]}
+    assert by_id["1"]["sample"] == {"id": "1", "question": "q1"}
+    assert by_id["ghost-id"]["sample"] is None  # degrades per-sample, never 500
+
+
+def test_api_run_detail_all_samples_null_for_pre_0_2_manifest(tmp_path: Path, serve) -> None:
+    root = tmp_path / "results"
+    make_run(root, "old-run", manifest=make_manifest(name="old", dataset_path=None))
+    _, body = get_json(serve(root), "/api/runs/old-run")
+    assert body["dataset_matches"] is None
+    assert len(body["samples"]) == 2
+    assert all(s["sample"] is None for s in body["samples"])
+    assert "error" not in body  # degraded, not broken
+
+
+def test_api_run_detail_changed_dataset_still_joins_with_warning(tmp_path: Path, serve) -> None:
+    # A changed dataset is a warning, not a join failure: the join uses the
+    # file's *current* content (decision 1 -- "still renders but shows a
+    # visible warning").
+    dataset = tmp_path / "data.jsonl"
+    make_dataset(dataset, [{"id": "1", "question": "original"}])
+    root = tmp_path / "results"
+    make_run(
+        root,
+        "run-a",
+        manifest=make_manifest(name="a", dataset_path=dataset),
+        results_lines=[sample_line("1")],
+    )
+    make_dataset(dataset, [{"id": "1", "question": "edited"}])
+    _, body = get_json(serve(root), "/api/runs/run-a")
+    assert body["dataset_matches"] is False
+    assert body["samples"][0]["sample"] == {"id": "1", "question": "edited"}
+
+
+def test_api_run_detail_corrupted_line_skipped_and_counted(tmp_path: Path, serve) -> None:
+    dataset = tmp_path / "data.jsonl"
+    make_dataset(dataset, [{"id": "1"}, {"id": "2"}])
+    root = tmp_path / "results"
+    make_run(
+        root,
+        "run-a",
+        manifest=make_manifest(name="a", dataset_path=dataset),
+        results_lines=[sample_line("1"), "{corrupted", "", sample_line("2")],
+    )
+    _, body = get_json(serve(root), "/api/runs/run-a")
+    assert body["parse_errors"] == 1  # the corrupted line; the blank line is not an error
+    # No half-parsed ghost samples: exactly the two good rows survive.
+    assert [s["sample_id"] for s in body["samples"]] == ["1", "2"]
+
+
+def test_api_run_detail_malformed_manifest_degrades(tmp_path: Path, serve) -> None:
+    root = tmp_path / "results"
+    make_run(root, "bad-run", manifest="{this is not json")
+    status, body = get_json(serve(root), "/api/runs/bad-run")
+    assert status == 200
+    assert body["dir"] == "bad-run"
+    assert isinstance(body["error"], str) and body["error"]
+    assert body["manifest"] is None
+    assert body["dataset_matches"] is None
+    # Samples still come back (unjoined) -- the run degrades, it doesn't vanish.
+    assert [s["sample_id"] for s in body["samples"]] == ["1", "2"]
+    assert all(s["sample"] is None for s in body["samples"])
+
+
+def test_api_run_detail_trailing_path_is_404(clean_run: Path, serve) -> None:
+    status, _, _ = get(serve(clean_run), "/api/runs/qa-abc12345/extra")
+    assert status == 404
+
+
 # --- routing, traversal, root page --------------------------------------------------------
 
 

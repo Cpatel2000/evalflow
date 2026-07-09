@@ -77,33 +77,47 @@ def _dataset_matches(manifest: dict) -> bool | None:
     return current == recorded
 
 
-def _count_parse_errors(results_path: Path) -> int:
-    """Non-blank results.jsonl lines that fail to parse as a JSON object."""
+def _read_results(results_path: Path) -> tuple[list[dict], int]:
+    """Parse results.jsonl rows in file order, counting (not raising on) any
+    non-blank line that isn't a JSON object. No half-parsed ghost samples."""
     try:
         text = results_path.read_text()
     except OSError:
-        return 0
+        return [], 0
+    rows: list[dict] = []
     errors = 0
     for line in text.splitlines():
         if not line.strip():
             continue
         try:
-            if not isinstance(json.loads(line), dict):
-                errors += 1
+            row = json.loads(line)
         except json.JSONDecodeError:
             errors += 1
-    return errors
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+        else:
+            errors += 1
+    return rows, errors
 
 
-def _run_entry(run_dir: Path) -> dict:
-    """One /api/runs entry. A malformed manifest yields {dir, error} -- the run
-    surfaces rather than disappearing. The error key is omitted when healthy."""
+def _read_manifest(run_dir: Path) -> tuple[dict | None, str | None]:
+    """(manifest, None) when parseable, (None, error message) when not."""
     try:
         manifest = json.loads((run_dir / "manifest.json").read_text())
         if not isinstance(manifest, dict):
             raise ValueError("not a JSON object")
     except (OSError, ValueError) as exc:
-        return {"dir": run_dir.name, "error": f"manifest.json: {exc}"}
+        return None, f"manifest.json: {exc}"
+    return manifest, None
+
+
+def _run_entry(run_dir: Path) -> dict:
+    """One /api/runs entry. A malformed manifest yields {dir, error} -- the run
+    surfaces rather than disappearing. The error key is omitted when healthy."""
+    manifest, error = _read_manifest(run_dir)
+    if manifest is None:
+        return {"dir": run_dir.name, "error": error}
     return {
         "dir": run_dir.name,
         "name": manifest.get("name"),
@@ -120,8 +134,37 @@ def _run_entry(run_dir: Path) -> dict:
         "wall_time_s": manifest.get("wall_time_s"),
         "model": manifest.get("requested_model"),
         "dataset_matches": _dataset_matches(manifest),
-        "parse_errors": _count_parse_errors(run_dir / "results.jsonl"),
+        "parse_errors": _read_results(run_dir / "results.jsonl")[1],
     }
+
+
+def run_detail(run_dir: Path) -> dict:
+    """The /api/runs/{dir} payload: manifest verbatim + results rows joined to
+    dataset rows (docs/design/viewer.md HTTP contract).
+
+    Results rows pass through verbatim -- the API is a window, not a filter --
+    with one added key, "sample": the dataset row, or None when it cannot be
+    joined. The join reflects the dataset file's *current* content;
+    dataset_matches (tri-state) is what warns that this may differ from what
+    the run saw. A malformed manifest degrades (error set, manifest None,
+    samples unjoined) rather than 404ing: this directory is a run.
+    """
+    manifest, error = _read_manifest(run_dir)
+    rows, parse_errors = _read_results(run_dir / "results.jsonl")
+    index = dataset_index(manifest) if manifest is not None else None
+    detail: dict = {
+        "dir": run_dir.name,
+        "manifest": manifest,
+        "dataset_matches": _dataset_matches(manifest) if manifest is not None else None,
+        "parse_errors": parse_errors,
+        "samples": [
+            {**row, "sample": index.get(str(row.get("sample_id"))) if index else None}
+            for row in rows
+        ],
+    }
+    if error is not None:
+        detail["error"] = error
+    return detail
 
 
 def list_runs(root: Path) -> list[dict]:
@@ -132,8 +175,9 @@ def list_runs(root: Path) -> list[dict]:
 
 
 class _ViewerHandler(BaseHTTPRequestHandler):
-    """Exact-match routing only; anything else is 404 (traversal included --
-    /api/runs/{dir} will validate against the discovered list when it lands)."""
+    """Exact-match routing; /api/runs/{dir} is validated against the discovered
+    run list, so traversal paths (raw or percent-encoded, never decoded here)
+    can only ever 404."""
 
     def __init__(self, *args: object, results_root: Path, **kwargs: object) -> None:
         self.results_root = results_root
@@ -147,6 +191,13 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         elif path == "/api/runs":
             body = json.dumps(list_runs(self.results_root)).encode()
             self._send(200, "application/json", body)
+        elif path.startswith("/api/runs/"):
+            name = path[len("/api/runs/") :]
+            by_name = {p.name: p for p in discover_runs(self.results_root)}
+            if name in by_name:  # anything else -- unknown, traversal, subpath -- falls through
+                self._send(200, "application/json", json.dumps(run_detail(by_name[name])).encode())
+            else:
+                self._send(404, "application/json", b'{"error": "not found"}')
         else:
             self._send(404, "application/json", b'{"error": "not found"}')
 
