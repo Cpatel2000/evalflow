@@ -89,12 +89,31 @@ function tableWithHead(cols, numCols) {
 
 // --- run list view ------------------------------------------------------------------
 
+const PRE_02_NOTE = "dataset unverifiable: run predates dataset-path tracking; " +
+  "re-running the spec regenerates the manifest, usually near-free from cache";
+
+function runNotesList(run) {
+  const out = [];  // {short, full}: short for tight table cells, full for headers/hover
+  if (run.dataset_matches === false) {
+    out.push({ short: "dataset changed since this run",
+               full: "dataset changed since this run" });
+  }
+  if (run.dataset_matches === null) {
+    out.push({ short: "dataset unverifiable (pre-0.2 run)", full: PRE_02_NOTE });
+  }
+  if (run.parse_errors > 0) {
+    const n = run.parse_errors + " unreadable result line(s)";
+    out.push({ short: n, full: n });
+  }
+  return out;
+}
+
 function runNotes(run) {
-  const out = [];
-  if (run.dataset_matches === false) out.push("dataset changed since this run");
-  if (run.dataset_matches === null) out.push("dataset unverifiable (pre-0.2 run?)");
-  if (run.parse_errors > 0) out.push(run.parse_errors + " unreadable result line(s)");
-  return out.join("; ");
+  return runNotesList(run).map((n) => n.short).join("; ");
+}
+
+function runNotesFull(run) {
+  return runNotesList(run).map((n) => n.full).join("; ");
 }
 
 function listRow(run, selection) {
@@ -129,8 +148,10 @@ function listRow(run, selection) {
     td(fmtScore(run.mean_score), "num"),
     td(fmtCost(run.total_cost_usd), "num"),
     td(run.wall_time_s === null ? "" : Number(run.wall_time_s).toFixed(1), "num"),
-    td(runNotes(run), runNotes(run) ? "warn" : "")
   );
+  const notesCell = td(runNotes(run), runNotes(run) ? "warn" : "");
+  notesCell.title = runNotesFull(run);  // full actionable text on hover; column stays tight
+  tr.append(notesCell);
   return tr;
 }
 
@@ -279,7 +300,9 @@ function sampleRow(s, audit, accordion) {
     td(s.sample_id),
     td(s.state, s.state === "scored" ? "" : "err"),
     td(fmtScore(s.score), zero ? "num err" : "num"),
-    td(s.cached ? "yes" : "", "num"),
+    // Explicit yes/no; n/a for provider_error, where no primary response was
+    // ever produced and cache status is meaningless.
+    td(s.state === "provider_error" ? "n/a" : (s.cached ? "yes" : "no"), "num"),
     td(s.input_tokens, "num"),
     td(s.output_tokens, "num")
   );
@@ -385,7 +408,7 @@ function runHeader(data) {
   } else {
     wrap.append(el("h1", "", data.dir));
   }
-  const warnings = runNotes(data);
+  const warnings = runNotesFull(data);  // headers have room for the actionable text
   if (warnings) wrap.append(el("p", "warn", warnings));
   return wrap;
 }
@@ -503,7 +526,7 @@ function diffHeader(dirA, dataA, dirB, dataB) {
     ? el("p", "meta", "identity hashes match (same spec)")
     : el("p", "warn", "identity hashes differ"));
   for (const [dir, data] of [[dirA, dataA], [dirB, dataB]]) {
-    const warnings = runNotes(data);
+    const warnings = runNotesFull(data);
     if (data.error) wrap.append(el("p", "err", dir + ": manifest error: " + data.error));
     if (warnings) wrap.append(el("p", "warn", dir + ": " + warnings));
   }
