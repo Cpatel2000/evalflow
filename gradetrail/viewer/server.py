@@ -205,6 +205,9 @@ class _ViewerHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # Freshness over caching (design doc): the browser must never serve
+        # stale HTML or run data across viewer versions.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 

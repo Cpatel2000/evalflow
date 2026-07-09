@@ -521,6 +521,15 @@ def test_root_serves_index_html(clean_run: Path, serve) -> None:
     assert "/api/runs" in body  # the minimal page fetches the runs listing
 
 
+def test_responses_send_cache_control_no_store(clean_run: Path, serve) -> None:
+    # Stdlib http.server sends no caching headers of its own; without no-store,
+    # browsers serve stale HTML across viewer versions (freshness over caching).
+    addr = serve(clean_run)
+    for path in ("/", "/api/runs", "/api/runs/qa-abc12345"):
+        _, _, headers = get(addr, path)
+        assert headers["cache-control"] == "no-store", path
+
+
 def test_create_server_binds_loopback_only(clean_run: Path) -> None:
     server = create_server(clean_run)
     try:
