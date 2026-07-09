@@ -104,16 +104,23 @@ function listRow(run) {
   return tr;
 }
 
-async function showList(view) {
-  const runs = await fetchJSON("/api/runs");
+// Element.append() returns undefined (unlike appendChild) -- never chain off it.
+function tableWithHead(cols, numCols) {
   const table = el("table");
   const head = el("tr");
-  for (const col of ["name", "hash", "model", "created", "samples", "scored", "errors",
-                     "mean", "cost", "wall s", "notes"]) {
-    head.append(el("th", ["samples", "scored", "errors", "mean", "cost", "wall s"]
-                         .includes(col) ? "num" : "", col));
-  }
-  table.append(el("thead")).append(head);
+  for (const col of cols) head.append(el("th", numCols.includes(col) ? "num" : "", col));
+  const thead = el("thead");
+  thead.append(head);
+  table.append(thead);
+  return table;
+}
+
+async function showList(view) {
+  const runs = await fetchJSON("/api/runs");
+  const table = tableWithHead(
+    ["name", "hash", "model", "created", "samples", "scored", "errors", "mean", "cost",
+     "wall s", "notes"],
+    ["samples", "scored", "errors", "mean", "cost", "wall s"]);
   const tbody = table.appendChild(el("tbody"));
   for (const run of runs) tbody.append(listRow(run));
   view.append(table);
@@ -206,12 +213,9 @@ async function showRun(view, dir) {
   // Fetched once per view; expansion works from memory (no refetch per click).
   const data = await fetchJSON("/api/runs/" + encodeURIComponent(dir));
   view.append(runHeader(data));
-  const table = el("table");
-  const head = el("tr");
-  for (const col of ["id", "state", "score", "cached", "tok in", "tok out"]) {
-    head.append(el("th", col === "id" || col === "state" ? "" : "num", col));
-  }
-  table.append(el("thead")).append(head);
+  const table = tableWithHead(
+    ["id", "state", "score", "cached", "tok in", "tok out"],
+    ["score", "cached", "tok in", "tok out"]);
   const tbody = table.appendChild(el("tbody"));
   for (const s of data.samples) tbody.append(sampleRow(s, tbody));
   view.append(table);
@@ -233,8 +237,21 @@ async function route() {
   }
 }
 
-window.addEventListener("hashchange", route);
-route();
+function boot() {
+  // Degrade, don't crash (same convention as the server): a missing root
+  // element renders a visible message instead of an unhandled TypeError.
+  if (!document.getElementById("view") || !document.getElementById("status")) {
+    const msg = document.createElement("p");
+    msg.textContent = "viewer failed to boot: required page element missing (#view / #status)";
+    msg.style.color = "#b00020";
+    document.body.prepend(msg);
+    return;
+  }
+  window.addEventListener("hashchange", route);
+  route();
+}
+
+boot();
 </script>
 </body>
 </html>
